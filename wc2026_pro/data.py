@@ -64,7 +64,9 @@ LIVE_RESULT_KEYS = set()
 _LR = _os.path.join(_os.path.dirname(__file__), "live_results.json")
 if _os.path.exists(_LR):
     try:
-        for _k, _v in _json.load(open(_LR)).items():
+        with open(_LR) as _fp:
+            _live_results = _json.load(_fp)
+        for _k, _v in _live_results.items():
             _h, _a = _k.split("|"); _hg, _ag = int(_v[0]), int(_v[1])
             LIVE_RESULT_KEYS.add((_h, _a))
             PLAYED[(_h, _a)] = (_hg, _ag); PLAYED[(_a, _h)] = (_ag, _hg)
@@ -76,7 +78,8 @@ def _load_json_sidecar(_name, _default):
     if not _os.path.exists(_path):
         return _default
     try:
-        return _json.load(open(_path))
+        with open(_path) as _fp:
+            return _json.load(_fp)
     except Exception as _e:
         print(f"[data] could not load {_name}:", _e)
         return _default

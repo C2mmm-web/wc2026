@@ -200,20 +200,19 @@ def main():
         print("[fetch_results] API error:", data["errors"])
 
     history_payloads = []
-    if not data.get("errors"):
-        for season in HISTORY_SEASONS:
-            try:
-                history_payloads.append({
-                    "league": WC_LEAGUE_ID,
-                    "season": season,
-                    "data": api(f"fixtures?league={WC_LEAGUE_ID}&season={season}"),
-                })
-            except Exception as e:
-                history_payloads.append({
-                    "league": WC_LEAGUE_ID,
-                    "season": season,
-                    "data": {"errors": {"request": str(e)}, "response": []},
-                })
+    for season in HISTORY_SEASONS:
+        try:
+            history_payloads.append({
+                "league": WC_LEAGUE_ID,
+                "season": season,
+                "data": api(f"fixtures?league={WC_LEAGUE_ID}&season={season}"),
+            })
+        except Exception as e:
+            history_payloads.append({
+                "league": WC_LEAGUE_ID,
+                "season": season,
+                "data": {"errors": {"request": str(e)}, "response": []},
+            })
     outputs = build_fetch_outputs(data, history_payloads, previous_results=previous)
     outputs["status"]["previous_site"] = previous_status
 

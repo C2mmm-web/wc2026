@@ -244,11 +244,13 @@ small{color:var(--mut);font-size:12px;line-height:1.6;display:block}
 <script>const PRED=/*DATA*/;
 const GROUPS={};PRED.matches.forEach(m=>{(GROUPS[m.group]=GROUPS[m.group]||1)});const gkeys=Object.keys(GROUPS).sort();
 const pct=x=>(x*100).toFixed(0);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const ST=PRED.update_status||{},CR=ST.current_results||{},HS=ST.history||{};
 const checked=ST.checked_at?ST.checked_at.replace("T"," ").replace("Z"," UTC"):"未运行云端拉取";
+const apiReason=CR.errors?` · ${esc(JSON.stringify(CR.errors)).slice(0,90)}`:"";
 document.getElementById("sub").innerHTML=`Dixon-Coles + Elo 集成模型 · 版本 v${PRED.version} · 数据日期 ${PRED.generated}<br>点击任意一场，查看比分概率、置信区间、公开信号和文字解读。`;
 document.getElementById("status").innerHTML=
- `<span>最后云端更新 <b>${checked}</b></span><span>API 比分 <b>${CR.status||"not_run"}</b> · 完赛 ${CR.finished||0} · 待赛 ${CR.upcoming||0}</span><span>历史拟合 <b>${HS.status||"not_run"}</b> · 样本 ${HS.matches||0}</span>`;
+ `<span>最后云端更新 <b>${checked}</b></span><span>API 比分 <b>${CR.status||"not_run"}</b> · 完赛 ${CR.finished||0} · 待赛 ${CR.upcoming||0}${apiReason}</span><span>历史拟合 <b>${HS.status||"not_run"}</b> · 样本 ${HS.matches||0}</span>`;
 
 /* ---- filters + list ---- */
 let curMD=1,curGP="all";
@@ -352,7 +354,7 @@ def build_site(payload):
 
 def main():
     print("Backtesting / fitting models on history…")
-    report, elo, dc, w = run_backtest(history_rows=HISTORICAL_RESULTS)
+    report, elo, dc, w = run_backtest(history_rows=HISTORICAL_RESULTS, min_real_history_matches=40)
     print(f"  ensemble weight (Dixon-Coles share) = {w:.2f}")
     print(f"  test RPS  model={report['test']['model']['rps']}  "
           f"elo={report['test']['elo_only']['rps']}  dc={report['test']['dc_only']['rps']}  "
