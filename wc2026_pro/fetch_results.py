@@ -165,35 +165,7 @@ def build_fetch_outputs(current_data, history_payloads, previous_results=None, c
         },
     }
 
-def main():
-    if not API_FOOTBALL_KEY:
-        print("[fetch_results] no API key set (env API_FOOTBALL_KEY or .api_key) — skipping API import"); sys.exit(1)
-    try:
-        data = api(f"fixtures?league={WC_LEAGUE_ID}&season={WC_SEASON}")
-    except Exception as e:
-        print("[fetch_results] API unreachable:", e); sys.exit(2)
-    if data.get("errors"):
-        print("[fetch_results] API error:", data["errors"]); sys.exit(3)
-
-    history_payloads = []
-    for season in HISTORY_SEASONS:
-        try:
-            history_payloads.append({
-                "league": WC_LEAGUE_ID,
-                "season": season,
-                "data": api(f"fixtures?league={WC_LEAGUE_ID}&season={season}"),
-            })
-        except Exception as e:
-            history_payloads.append({
-                "league": WC_LEAGUE_ID,
-                "season": season,
-                "data": {"errors": {"request": str(e)}, "response": []},
-            })
-
-    previous, previous_status = previous_results_from_pages()
-    outputs = build_fetch_outputs(data, history_payloads, previous_results=previous)
-    outputs["status"]["previous_site"] = previous_status
-
+def write_outputs(outputs):
     json.dump(outputs["finished"], open(os.path.join(HERE, "live_results.json"), "w"),
               ensure_ascii=False, indent=1)
     json.dump(outputs["upcoming"], open(os.path.join(HERE, "live_fixtures.json"), "w"),
@@ -204,6 +176,48 @@ def main():
               ensure_ascii=False, indent=1)
     json.dump(outputs["status"], open(os.path.join(HERE, "update_status.json"), "w"),
               ensure_ascii=False, indent=1)
+
+def main():
+    previous, previous_status = previous_results_from_pages()
+    if not API_FOOTBALL_KEY:
+        outputs = build_fetch_outputs(
+            {"errors": {"auth": "API_FOOTBALL_KEY is not set"}, "response": []},
+            [],
+            previous_results=previous,
+        )
+        outputs["status"]["previous_site"] = previous_status
+        outputs["status"]["current_results"]["status"] = "no_key"
+        outputs["status"]["history"]["status"] = "no_key"
+        write_outputs(outputs)
+        print("[fetch_results] no API key set (env API_FOOTBALL_KEY or .api_key) — wrote no_key status")
+        return
+    try:
+        data = api(f"fixtures?league={WC_LEAGUE_ID}&season={WC_SEASON}")
+    except Exception as e:
+        print("[fetch_results] API unreachable:", e)
+        data = {"errors": {"request": str(e)}, "response": []}
+    if data.get("errors"):
+        print("[fetch_results] API error:", data["errors"])
+
+    history_payloads = []
+    if not data.get("errors"):
+        for season in HISTORY_SEASONS:
+            try:
+                history_payloads.append({
+                    "league": WC_LEAGUE_ID,
+                    "season": season,
+                    "data": api(f"fixtures?league={WC_LEAGUE_ID}&season={season}"),
+                })
+            except Exception as e:
+                history_payloads.append({
+                    "league": WC_LEAGUE_ID,
+                    "season": season,
+                    "data": {"errors": {"request": str(e)}, "response": []},
+                })
+    outputs = build_fetch_outputs(data, history_payloads, previous_results=previous)
+    outputs["status"]["previous_site"] = previous_status
+
+    write_outputs(outputs)
     print(f"[fetch_results] finished={len(outputs['finished'])} upcoming={len(outputs['upcoming'])} "
           f"fresh={len(outputs['fresh_results'])} history={len(outputs['historical_results'])}")
     if outputs["status"]["unknown_api_names"]:
