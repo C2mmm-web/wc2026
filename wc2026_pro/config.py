@@ -24,3 +24,4 @@ API_FOOTBALL_KEY = _load_key()
 API_FOOTBALL_HOST = "v3.football.api-sports.io"
 WC_LEAGUE_ID = 1       # FIFA World Cup
 WC_SEASON = 2026
+HISTORY_SEASONS = (2014, 2018, 2022, 2026)

@@ -60,14 +60,41 @@ PLAYED = {
 # Auto-merge results pulled by fetch_results.py (API-Football). Stored both
 # orientations so lookups work everywhere. Live data overrides hand entries.
 import os as _os, json as _json
+LIVE_RESULT_KEYS = set()
 _LR = _os.path.join(_os.path.dirname(__file__), "live_results.json")
 if _os.path.exists(_LR):
     try:
         for _k, _v in _json.load(open(_LR)).items():
             _h, _a = _k.split("|"); _hg, _ag = int(_v[0]), int(_v[1])
+            LIVE_RESULT_KEYS.add((_h, _a))
             PLAYED[(_h, _a)] = (_hg, _ag); PLAYED[(_a, _h)] = (_ag, _hg)
     except Exception as _e:
         print("[data] could not merge live_results.json:", _e)
+
+def _load_json_sidecar(_name, _default):
+    _path = _os.path.join(_os.path.dirname(__file__), _name)
+    if not _os.path.exists(_path):
+        return _default
+    try:
+        return _json.load(open(_path))
+    except Exception as _e:
+        print(f"[data] could not load {_name}:", _e)
+        return _default
+
+FRESH_RESULT_KEYS = set()
+for _k in _load_json_sidecar("fresh_results.json", {}).keys():
+    try:
+        _h, _a = _k.split("|")
+        FRESH_RESULT_KEYS.add((_h, _a))
+    except ValueError:
+        pass
+
+HISTORICAL_RESULTS = _load_json_sidecar("historical_results.json", [])
+UPDATE_STATUS = _load_json_sidecar("update_status.json", {
+    "checked_at": None,
+    "current_results": {"status": "not_run", "finished": 0, "upcoming": 0},
+    "history": {"status": "not_run", "matches": 0},
+})
 
 # ---- REAL live bookmaker match lines: (home, draw, away) American, fixture orientation ----
 MARKET_MATCH = {

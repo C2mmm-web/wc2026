@@ -1,12 +1,9 @@
 """
 wc2026_pro.backtest — P3: validation, calibration, ensemble-weight optimisation.
 
-Because the full live international-results feed is not reachable in this sandbox,
-we validate the *machinery* on a realistic synthetic history generated from
-credible latent strengths (anchored to the real Elo prior ordering) with
-realistic overdispersion. This proves the model is well-calibrated and that the
-ensemble adds value over naive baselines; in production the SAME code consumes a
-live results CSV instead of the generator.
+When fetch_results.py can reach API-Football, this module trains and validates on
+real historical World Cup fixtures. If that feed is unavailable or too thin, it
+falls back to a realistic synthetic history so the page still builds.
 """
 import numpy as np
 from data import TEAMS, ELO_PRIOR
@@ -40,6 +37,26 @@ def gen_history(n_matches=13000):
         rows.append((h, a, int(hg), int(ag), neutral, date))
     return rows
 
+def rows_from_history(history_rows):
+    rows = []
+    for r in history_rows or []:
+        h, a = r.get("home"), r.get("away")
+        if h not in TEAMS or a not in TEAMS or h == a:
+            continue
+        try:
+            hg = int(r.get("home_goals"))
+            ag = int(r.get("away_goals"))
+        except (TypeError, ValueError):
+            continue
+        rows.append((r.get("date") or "", h, a, hg, ag, bool(r.get("neutral", True))))
+    rows.sort(key=lambda x: x[0])
+    n = len(rows)
+    out = []
+    for i, (_date, h, a, hg, ag, neutral) in enumerate(rows):
+        date_norm = 1.0 if n <= 1 else i / (n - 1)
+        out.append((h, a, hg, ag, neutral, date_norm))
+    return out
+
 def decay_weight(date, halflife=0.25):
     return 0.5 ** ((1 - date) / halflife)
 
@@ -72,14 +89,17 @@ def probs_from_lambdas(lh, la, rho=-0.05, maxg=10):
     s = w + d + l
     return [w/s, d/s, l/s]
 
-def run_backtest():
-    rows = gen_history()
+def run_backtest(history_rows=None, min_real_history_matches=80):
+    real_rows = rows_from_history(history_rows)
+    use_real_history = len(real_rows) >= min_real_history_matches
+    rows = real_rows if use_real_history else gen_history()
     n_all = len(rows)
     i1, i2 = int(n_all*0.6), int(n_all*0.8)
     train, val, test = rows[:i1], rows[i1:i2], rows[i2:]   # 60/20/20, no leakage
 
     def fit_models(data):
-        e = EloModel(prior={t: 1500 for t in TEAMS}, k=30, home_adv=60)
+        prior = ELO_PRIOR if use_real_history else {t: 1500 for t in TEAMS}
+        e = EloModel(prior=prior, k=30, home_adv=60)
         for h, a, hg, ag, neu, date in data:
             e.update(h, a, hg, ag, neutral=neu, weight=1.0)
         d = DixonColes(TEAMS)
@@ -92,6 +112,7 @@ def run_backtest():
             le_h, le_a = elo_lambdas(e.r, h, a, neutral=neu)
             ld_h, ld_a = d.lambdas(h, a, neutral=neu)
             lh = w*ld_h + (1-w)*le_h; la = w*ld_a + (1-w)*le_a
+            lh = float(np.clip(lh, 0.05, 8.0)); la = float(np.clip(la, 0.05, 8.0))
             p = probs_from_lambdas(lh, la, d.rho)
             y = 0 if hg > ag else 1 if hg == ag else 2
             LL += log_loss(p, y); BR += brier(p, y); RP += rps(p, y)
@@ -139,6 +160,8 @@ def run_backtest():
 
     report = {
         "n_train": len(train)+len(val), "n_test": n,
+        "n_history": len(real_rows),
+        "data_source": "api_football_history" if use_real_history else "synthetic_fallback",
         "ensemble_weight_DC": w_star,
         "test": {
             "model":      dict(logloss=round(ll_m,4), brier=round(br_m,4), rps=round(rp_m,4)),

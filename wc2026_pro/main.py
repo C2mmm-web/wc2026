@@ -6,9 +6,10 @@ prediction_log.csv, and rebuilds the webpage embedding the generated predictions
 import json, os, math, csv, datetime
 import numpy as np
 from data import (GROUPS, TEAMS, ELO_PRIOR, HOSTS, MARKET_TITLE, MARKET_MATCH,
-                  PLAYED, INJURIES, MODEL_VERSION)
+                  PLAYED, INJURIES, MODEL_VERSION, LIVE_RESULT_KEYS,
+                  FRESH_RESULT_KEYS, HISTORICAL_RESULTS, UPDATE_STATUS)
 from engine import (elo_lambdas, context_mult, availability_mult, summarize,
-                    american_to_prob, devig, _tau, _pois)
+                    american_to_prob, devig, _tau, _pois, _goal_exp)
 from backtest import run_backtest
 from tournament import Predictor, simulate
 
@@ -22,6 +23,52 @@ def fixtures():
             for i, j in pairs:
                 out.append({"group": g, "md": md, "home": t[i], "away": t[j]})
     return out
+
+def _result_key(home, away):
+    return f"{home}|{away}"
+
+def _points_for(team, row):
+    if row["home"] == team:
+        gf, ga = int(row["home_goals"]), int(row["away_goals"])
+    elif row["away"] == team:
+        gf, ga = int(row["away_goals"]), int(row["home_goals"])
+    else:
+        return None
+    return 3 if gf > ga else 1 if gf == ga else 0
+
+def recent_ppg(team, historical_rows, limit=8):
+    rows = [r for r in historical_rows or [] if r.get("home") == team or r.get("away") == team]
+    rows.sort(key=lambda r: r.get("date") or "")
+    rows = rows[-limit:]
+    if not rows:
+        return None
+    pts = [_points_for(team, r) for r in rows]
+    pts = [p for p in pts if p is not None]
+    return round(sum(pts) / len(pts), 2) if pts else None
+
+def match_metadata(home, away, played, update_status, fresh_keys, historical_rows):
+    key = _result_key(home, away)
+    fresh = (home, away) in fresh_keys or key in fresh_keys
+    api_played = (home, away) in LIVE_RESULT_KEYS or key in LIVE_RESULT_KEYS or fresh
+    home_ppg = recent_ppg(home, historical_rows)
+    away_ppg = recent_ppg(away, historical_rows)
+    signals = [f"Elo差 {ELO_PRIOR[home] - ELO_PRIOR[away]:+d}"]
+    if home in HOSTS and away not in HOSTS:
+        signals.append(f"{home}东道主")
+    if home_ppg is not None and away_ppg is not None:
+        signals.append(f"最近战绩 {home} {home_ppg} PPG / {away} {away_ppg} PPG")
+    elif historical_rows:
+        signals.append(f"历史样本 {len(historical_rows)} 场")
+    if (home, away) in MARKET_MATCH:
+        signals.append("含公开盘口校准")
+    if played and api_played:
+        signals.append("比分来自 API-Football")
+    return {
+        "fresh": bool(fresh),
+        "played_source": "api" if api_played else ("manual" if played else None),
+        "public_signals": signals,
+        "update_status": update_status,
+    }
 
 def market_fit(odds):
     pw, pd, pl = devig(*odds)
@@ -56,6 +103,7 @@ def predict_match(elo, dc, w, home, away, B=300):
     le_h, le_a = elo_lambdas(elo.r, home, away, neutral=neutral)
     ld_h, ld_a = dc.lambdas(home, away, neutral=neutral)
     lh = w*ld_h + (1-w)*le_h; la = w*ld_a + (1-w)*le_a
+    lh = min(8.0, max(0.05, lh)); la = min(8.0, max(0.05, la))
     src = "model"; mkt = None; mh = ma = None
     if (home, away) in MARKET_MATCH:
         mh, ma = market_fit(MARKET_MATCH[(home, away)])
@@ -74,9 +122,10 @@ def predict_match(elo, dc, w, home, away, B=300):
         leh, lea = elo_lambdas({home:eh, away:ea}, home, away, neutral=neutral)
         ah = dc.att[ih]+_rng.normal(0,0.05); aa = dc.att[ia]+_rng.normal(0,0.05)
         dh = dc.dff[ih]+_rng.normal(0,0.05); da = dc.dff[ia]+_rng.normal(0,0.05)
-        ldh = math.exp(ah-da+g); lda = math.exp(aa-dh)
+        ldh = _goal_exp(ah-da+g); lda = _goal_exp(aa-dh)
         bh = w*ldh+(1-w)*leh; bla = w*lda+(1-w)*lea
         if mkt: bh = 0.5*bh+0.5*mh; bla = 0.5*bla+0.5*ma
+        bh = min(8.0, max(0.05, bh)); bla = min(8.0, max(0.05, bla))
         ws[b], ds[b], ls[b] = _wdl(bh*ch*av_h, bla*ca*av_a)
     ci = {"w":[round(float(np.percentile(ws,5)),3), round(float(np.percentile(ws,95)),3)],
           "d":[round(float(np.percentile(ds,5)),3), round(float(np.percentile(ds,95)),3)],
@@ -129,7 +178,8 @@ SITE_TEMPLATE = r"""<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
 :root{--bg:#0b1020;--card:#141b30;--c2:#1b2440;--line:#27314f;--txt:#eef2fb;--mut:#9aa6c4;--acc:#5b8cff;--acc2:#22d3a6;--gold:#f5c451;--pur:#cf9bff;--red:#ff7a90}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,#16203c,#0b1020 60%);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 .wrap{max-width:760px;margin:0 auto;padding:30px 18px 80px}
-h1{font-size:24px;margin:0 0 4px;letter-spacing:-.3px}.sub{color:var(--mut);font-size:13px;margin-bottom:22px;line-height:1.6}
+h1{font-size:24px;margin:0 0 4px;letter-spacing:-.3px}.sub{color:var(--mut);font-size:13px;margin-bottom:14px;line-height:1.6}
+.status{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 20px}.status span{background:#0e1530;border:1px solid var(--line);border-radius:8px;padding:6px 9px;color:#cdd7ee;font-size:12px}.status b{color:var(--acc2)}
 .bar2{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
 .chip{background:var(--c2);border:1px solid var(--line);color:var(--mut);border-radius:20px;padding:6px 13px;font-size:13px;cursor:pointer;user-select:none}
 .chip.on{background:var(--acc);color:#fff;border-color:var(--acc);font-weight:600}.chip.gp.on{background:var(--acc2);color:#06121f;border-color:var(--acc2)}
@@ -137,12 +187,13 @@ h1{font-size:24px;margin:0 0 4px;letter-spacing:-.3px}.sub{color:var(--mut);font
 /* match list rows */
 .list{display:flex;flex-direction:column;gap:8px}
 .mrow{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 15px;cursor:pointer;transition:.12s}
+.mrow.fresh{border-color:#2bbf9d;box-shadow:0 0 0 1px rgba(34,211,166,.18) inset;background:#132335}
 .mrow:hover{border-color:var(--acc);background:#172040}
 .tag{font-size:10px;color:var(--mut);background:#0e1530;border:1px solid var(--line);border-radius:6px;padding:2px 7px;white-space:nowrap}
 .mteams{flex:1;font-size:15px}.mteams .fav{font-weight:700}.vs{color:var(--mut);font-weight:400;margin:0 6px;font-size:13px}
 .mscore{font-weight:700;color:var(--mut);font-variant-numeric:tabular-nums}
 .pill{font-size:11px;padding:2px 9px;border-radius:20px;white-space:nowrap}
-.pill.mkt{background:#2a2412;color:var(--gold)}.pill.mod{background:#14203a;color:var(--acc)}.pill.fin{background:#13322a;color:var(--acc2)}
+.pill.mkt{background:#2a2412;color:var(--gold)}.pill.mod{background:#14203a;color:var(--acc)}.pill.fin{background:#13322a;color:var(--acc2)}.pill.new{background:#113a32;color:var(--acc2);border:1px solid rgba(34,211,166,.35)}
 .jdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--pur);margin-left:6px;vertical-align:middle}
 .headline{font-size:12px;color:var(--mut);min-width:96px;text-align:right}
 /* secondary panels */
@@ -181,6 +232,7 @@ small{color:var(--mut);font-size:12px;line-height:1.6;display:block}
 </style></head><body><div class="wrap">
 <h1>⚽ 2026 世界杯预测 <span style="font-size:12px;color:var(--pur);font-weight:600">PRO</span></h1>
 <div class="sub" id="sub"></div>
+<div class="status" id="status"></div>
 
 <div class="bar2" id="mdf"></div><div class="bar2" id="gpf"></div>
 <div class="list" id="list"></div>
@@ -192,7 +244,11 @@ small{color:var(--mut);font-size:12px;line-height:1.6;display:block}
 <script>const PRED=/*DATA*/;
 const GROUPS={};PRED.matches.forEach(m=>{(GROUPS[m.group]=GROUPS[m.group]||1)});const gkeys=Object.keys(GROUPS).sort();
 const pct=x=>(x*100).toFixed(0);
-document.getElementById("sub").innerHTML=`Dixon-Coles + Elo 集成模型 · 已在历史数据上回测校准 · 版本 v${PRED.version} · 数据日期 ${PRED.generated}<br>点击任意一场，查看完整比分概率、置信区间、模型与盘口对比和文字解读。`;
+const ST=PRED.update_status||{},CR=ST.current_results||{},HS=ST.history||{};
+const checked=ST.checked_at?ST.checked_at.replace("T"," ").replace("Z"," UTC"):"未运行云端拉取";
+document.getElementById("sub").innerHTML=`Dixon-Coles + Elo 集成模型 · 版本 v${PRED.version} · 数据日期 ${PRED.generated}<br>点击任意一场，查看比分概率、置信区间、公开信号和文字解读。`;
+document.getElementById("status").innerHTML=
+ `<span>最后云端更新 <b>${checked}</b></span><span>API 比分 <b>${CR.status||"not_run"}</b> · 完赛 ${CR.finished||0} · 待赛 ${CR.upcoming||0}</span><span>历史拟合 <b>${HS.status||"not_run"}</b> · 样本 ${HS.matches||0}</span>`;
 
 /* ---- filters + list ---- */
 let curMD=1,curGP="all";
@@ -204,10 +260,10 @@ function chips(){const md=document.getElementById("mdf");
  gp.querySelectorAll(".gp").forEach(c=>c.onclick=()=>{curGP=c.dataset.gp;chips();list()});}
 function list(){const L=PRED.matches.filter(m=>m.md==curMD&&(curGP=="all"||m.group==curGP));let h="";
  L.forEach((m,i)=>{const r=m.judgment,p=m.played;let fh,fa,pill,head,hs="",as="";
-  if(p){fh=p[0]>p[1];fa=p[1]>p[0];hs=p[0];as=p[1];pill='<span class="pill fin">完赛</span>';head="最终比分";}
+  if(p){fh=p[0]>p[1];fa=p[1]>p[0];hs=p[0];as=p[1];pill=m.fresh?'<span class="pill new">刚更新</span>':'<span class="pill fin">完赛</span>';head="最终比分";}
   else{fh=r.w>=r.l;fa=r.l>r.w;pill=m.src=='market'?'<span class="pill mkt">盘口校准</span>':'<span class="pill mod">模型</span>';
    head=`${fh?m.home:m.away} 胜 ${pct(Math.max(r.w,r.l))}%`;}
-  h+=`<div class="mrow" data-i="${i}"><span class="tag">${m.group}组·R${m.md}</span>
+  h+=`<div class="mrow ${m.fresh?'fresh':''}" data-i="${i}"><span class="tag">${m.group}组·R${m.md}</span>
    <span class="mteams"><span class="${fh?'fav':''}">${m.home}</span><span class="vs">vs</span><span class="${fa?'fav':''}">${m.away}</span>${m.note?'<span class="jdot" title="含伤停判断"></span>':''}</span>
    ${p?`<span class="mscore">${hs} : ${as}</span>`:`<span class="headline">${head}</span>`}${pill}</div>`});
  const box=document.getElementById("list");box.innerHTML=h||'<small>暂无比赛</small>';
@@ -236,6 +292,7 @@ function report(m){const r=m.judgment,ci=m.ci,p=m.played;
   cmp=`<div class="cmp"><b style="color:var(--gold)">模型 vs 盘口</b><br>
    主胜 模型 ${pct(r.w)}% / 盘口 ${pct(mk[0])}% &nbsp;·&nbsp; 平 模型 ${pct(r.d)}% / 盘口 ${pct(mk[1])}% &nbsp;·&nbsp; 客胜 模型 ${pct(r.l)}% / 盘口 ${pct(mk[2])}%</div>`;}
  let res=p?`<div class="fin">最终比分<b>${m.home} ${p[0]} : ${p[1]} ${m.away}</b></div>`:"";
+ const sig=(m.public_signals||[]).map(s=>`<span>${s}</span>`).join("");
  document.getElementById("rep").innerHTML=`<span class="x" onclick="cl()">×</span>
   <div class="rh">${m.home} <span style="color:var(--mut);font-weight:400">vs</span> ${m.away}</div>
   <div class="rs">${m.group} 组 · 第 ${m.md} 轮 · ${m.src=='market'?'已用实时盘口校准':'Elo + Dixon-Coles 模型'}</div>
@@ -265,7 +322,9 @@ function report(m){const r=m.judgment,ci=m.ci,p=m.played;
 
   <div class="seclab">关键数据</div>
   <div class="kv"><span>预期进球 <b>${r.lh} : ${r.la}</b></span><span>双方进球 <b>${pct(r.btts)}%</b></span>
-   <span>大 2.5 球 <b>${pct(r.over)}%</b></span><span>小 2.5 球 <b>${pct(1-r.over)}%</b></span></div>`;
+   <span>大 2.5 球 <b>${pct(r.over)}%</b></span><span>小 2.5 球 <b>${pct(1-r.over)}%</b></span></div>
+  <div class="seclab">免费公开信号</div>
+  <div class="kv">${sig}</div>`;
  document.getElementById("ov").classList.add("show");}
 function cl(){document.getElementById("ov").classList.remove("show");}
 document.getElementById("ov").onclick=e=>{if(e.target.id=="ov")cl();};document.addEventListener("keydown",e=>{if(e.key=="Escape")cl();});
@@ -276,12 +335,13 @@ PRED.title.slice(0,16).forEach((r,i)=>{th+=`<tr><td class="mut">${i+1}</td><td>$
 document.getElementById("title").innerHTML=th+'</tbody></table><small>“综合” = 模型 + 博彩夺冠盘口；“纯模型” = 引擎蒙特卡洛（含参数不确定性）。</small>';
 const bt=PRED.backtest,T=bt.test;
 const mrow=(l,o,b)=>`<tr><td>${l}</td><td class="n ${b?'best':''}">${o.logloss}</td><td class="n ${b?'best':''}">${o.brier}</td><td class="n ${b?'best':''}">${o.rps}</td></tr>`;
+const source=bt.data_source=="api_football_history"?"真实历史赛果":"拟真回退样本";
 document.getElementById("modelcard").innerHTML=
- `<div><span class="metric">集成权重(Dixon-Coles) <b>${pct(PRED.ensemble_weight_dc)}%</b></span><span class="metric">主场优势 γ <b>${bt.dc_gamma}</b></span><span class="metric">低比分相关 ρ <b>${bt.dc_rho}</b></span><span class="metric">测试样本 <b>${bt.n_test}</b></span></div>
+ `<div><span class="metric">训练来源 <b>${source}</b></span><span class="metric">历史样本 <b>${bt.n_history||0}</b></span><span class="metric">集成权重(Dixon-Coles) <b>${pct(PRED.ensemble_weight_dc)}%</b></span><span class="metric">主场优势 γ <b>${bt.dc_gamma}</b></span><span class="metric">低比分相关 ρ <b>${bt.dc_rho}</b></span><span class="metric">测试样本 <b>${bt.n_test}</b></span></div>
  <table class="tbl" style="margin-top:10px"><thead><tr><th>模型（留出测试集）</th><th class="n">LogLoss</th><th class="n">Brier</th><th class="n">RPS↓</th></tr></thead><tbody>
  ${mrow("本模型",T.model,1)}${mrow("仅 Elo",T.elo_only)}${mrow("仅 Dixon-Coles",T.dc_only)}${mrow("朴素基准",T.baseline)}${mrow("锐利盘口基准",T.sharp_market_proxy)}</tbody></table>
- <small>数值越低越好。本模型优于纯 Elo 与朴素基准，并与“锐利盘口”基准持平 —— 即在留出数据上达到接近博彩级的精度。校准良好：40–50% 档位的主胜实际兑现 ${bt.calibration_home_win[4][1]}%。</small>
- <div class="note" style="margin-top:12px">诚实说明：此沙盒无法抓取实时全量国际比赛数据，故模型在“由真实 Elo 强弱顺序生成的拟真历史”上完成校准验证。架构、校准与赛事逻辑均为生产级，接入实时比赛数据只需替换数据源一行。</div>`;
+ <small>数值越低越好。Brier / LogLoss / RPS 衡量的是概率准不准，比“精确比分”更有价值；精确比分本身随机性很高，最可能比分通常只是方向参考。</small>
+ <div class="note" style="margin-top:12px">数据说明：云端会优先用 API-Football 拉到的真实历史赛果重新拟合；若 API 当次不可用或历史样本不足，页面会明确显示为“拟真回退样本”，不会假装成真实历史。</div>`;
 chips();list();</script></body></html>"""
 
 def build_site(payload):
@@ -292,7 +352,7 @@ def build_site(payload):
 
 def main():
     print("Backtesting / fitting models on history…")
-    report, elo, dc, w = run_backtest()
+    report, elo, dc, w = run_backtest(history_rows=HISTORICAL_RESULTS)
     print(f"  ensemble weight (Dixon-Coles share) = {w:.2f}")
     print(f"  test RPS  model={report['test']['model']['rps']}  "
           f"elo={report['test']['elo_only']['rps']}  dc={report['test']['dc_only']['rps']}  "
@@ -320,10 +380,13 @@ def main():
         host = (h in HOSTS) and (a not in HOSTS)
         base,judg,src,note,mkt,ci,grid6 = predict_match(elo,dc,w,h,a)
         ana = analysis_zh(h,a,judg,ci,mkt,note,host)
+        meta = match_metadata(h, a, played, UPDATE_STATUS, FRESH_RESULT_KEYS, HISTORICAL_RESULTS)
         matches.append({**f, "src":src, "note":note,
                         "played": list(played) if played else None,
                         "model": pack(base), "judgment": pack(judg),
-                        "ci":ci, "market":mkt, "grid6":grid6, "analysis":ana})
+                        "ci":ci, "market":mkt, "grid6":grid6, "analysis":ana,
+                        "fresh": meta["fresh"], "played_source": meta["played_source"],
+                        "public_signals": meta["public_signals"]})
 
     title=[{"team":t,"model":round(mp[t]*100,2),"blended":round(bl[t]*100,2),
             "group_win":round(sim["group_win"][t]/sim["n"]*100,1),
@@ -335,6 +398,8 @@ def main():
     ratings={t:ELO_PRIOR[t] for t in TEAMS}   # display real anchored Elo, not synthetic-fit
     payload={"version":MODEL_VERSION,
              "generated":datetime.date.today().isoformat(),
+             "generated_at":datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+             "update_status":UPDATE_STATUS,
              "ensemble_weight_dc":round(w,3),
              "backtest":report,"ratings":ratings,
              "matches":matches,"title":title}

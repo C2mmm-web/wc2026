@@ -3,5 +3,13 @@
 config_local.py
 live_results.json
 live_fixtures.json
+fresh_results.json
+historical_results.json
+update_status.json
+predictions.json
+ratings.json
+backtest_report.json
+prediction_log.csv
+DEPLOY_GITHUB.md
 __pycache__/
 *.pyc

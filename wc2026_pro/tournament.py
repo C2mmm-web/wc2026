@@ -10,7 +10,7 @@ wc2026_pro.tournament — P4 correct tournament logic + P5 uncertainty.
 import math, random
 import numpy as np
 from data import GROUPS, HOSTS, PLAYED
-from engine import elo_lambdas, _tau
+from engine import elo_lambdas, _goal_exp, _tau
 
 RR = [(0, 1), (2, 3), (0, 2), (3, 1), (3, 0), (1, 2)]   # 3 matchdays
 
@@ -52,9 +52,11 @@ class Predictor:
         le_h, le_a = elo_lambdas(self.elo, h, a, neutral=neutral)
         ih, ia = self.dc.idx[h], self.dc.idx[a]
         g = 0.0 if neutral else self.dc.gamma
-        ld_h = math.exp(self.att[ih] - self.dff[ia] + g)
-        ld_a = math.exp(self.att[ia] - self.dff[ih])
-        return self.w*ld_h + (1-self.w)*le_h, self.w*ld_a + (1-self.w)*le_a
+        ld_h = _goal_exp(self.att[ih] - self.dff[ia] + g)
+        ld_a = _goal_exp(self.att[ia] - self.dff[ih])
+        lh = self.w*ld_h + (1-self.w)*le_h
+        la = self.w*ld_a + (1-self.w)*le_a
+        return min(8.0, max(0.05, lh)), min(8.0, max(0.05, la))
     def shootout(self, a, b):
         ea, eb = self.elo[a], self.elo[b]
         p = 1 / (1 + 10 ** (-(ea - eb) / 600))   # damped for shootout luck

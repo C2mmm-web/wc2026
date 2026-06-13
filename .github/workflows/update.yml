@@ -29,6 +29,8 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install numpy scipy
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
       - name: Fetch results + rebuild predictions
         working-directory: wc2026_pro
         env:
@@ -40,6 +42,7 @@ jobs:
         run: |
           mkdir -p _site
           cp wc2026_predictor.html _site/index.html
+          cp wc2026_pro/predictions.json _site/predictions.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

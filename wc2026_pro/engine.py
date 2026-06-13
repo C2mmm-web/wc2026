@@ -126,8 +126,8 @@ class DixonColes:
         ah = self.att[self.idx[home]]; dh = self.dff[self.idx[home]]
         aa = self.att[self.idx[away]]; da = self.dff[self.idx[away]]
         g = 0.0 if neutral else self.gamma
-        lh = math.exp(ah - da + g)
-        la = math.exp(aa - dh)
+        lh = _goal_exp(ah - da + g)
+        la = _goal_exp(aa - dh)
         return lh, la
 
 # ================= Elo -> lambda mapping (model #1) =================
@@ -172,6 +172,9 @@ def availability_mult(home, away):
 
 # ================= scoreline grid with DC correction =================
 def _pois(k, l): return math.exp(-l) * l**k / math.factorial(k)
+
+def _goal_exp(x):
+    return math.exp(min(math.log(8.0), max(math.log(0.05), x)))
 
 def grid(lh, la, rho=-0.05, maxg=11):
     g = np.zeros((maxg, maxg))
