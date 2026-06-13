@@ -1,0 +1,7 @@
+# NEVER commit the API key or local data caches
+.api_key
+config_local.py
+live_results.json
+live_fixtures.json
+__pycache__/
+*.pyc
