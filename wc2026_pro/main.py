@@ -12,6 +12,7 @@ from engine import (elo_lambdas, context_mult, availability_mult, summarize,
                     american_to_prob, devig, _tau, _pois, _goal_exp)
 from backtest import run_backtest
 from tournament import Predictor, simulate
+from form import attack_mult, build_form_adjustments
 
 HERE = os.path.dirname(__file__)
 TEMPLATE_MD = {1: [(0,1),(2,3)], 2: [(0,2),(3,1)], 3: [(3,0),(1,2)]}
@@ -46,7 +47,7 @@ def recent_ppg(team, historical_rows, limit=8):
     pts = [p for p in pts if p is not None]
     return round(sum(pts) / len(pts), 2) if pts else None
 
-def match_metadata(home, away, played, update_status, fresh_keys, historical_rows):
+def match_metadata(home, away, played, update_status, fresh_keys, historical_rows, form_adjustments=None):
     key = _result_key(home, away)
     fresh = (home, away) in fresh_keys or key in fresh_keys
     api_played = (home, away) in LIVE_RESULT_KEYS or key in LIVE_RESULT_KEYS or fresh
@@ -61,6 +62,10 @@ def match_metadata(home, away, played, update_status, fresh_keys, historical_row
         signals.append(f"历史样本 {len(historical_rows)} 场")
     if (home, away) in MARKET_MATCH:
         signals.append("含公开盘口校准")
+    for team in (home, away):
+        note = (form_adjustments or {}).get(team, {}).get("note")
+        if note:
+            signals.append(f"{team} {note}")
     if played and api_played:
         current_status = (update_status or {}).get("current_results", {}).get("status")
         source = "免费比分源" if current_status == "fallback_success" else "API-Football"
@@ -99,7 +104,7 @@ def _wdl(lh, la):
     M = np.outer(_pvec(lh), _pvec(la)); M /= M.sum()
     return float(np.tril(M,-1).sum()), float(np.trace(M)), float(np.triu(M,1).sum())
 
-def predict_match(elo, dc, w, home, away, B=300):
+def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None):
     host = (home in HOSTS) and (away not in HOSTS)
     neutral = not host
     le_h, le_a = elo_lambdas(elo.r, home, away, neutral=neutral)
@@ -111,10 +116,12 @@ def predict_match(elo, dc, w, home, away, B=300):
         mh, ma = market_fit(MARKET_MATCH[(home, away)])
         mkt = [round(x,4) for x in devig(*MARKET_MATCH[(home, away)])]
         lh = 0.5*lh + 0.5*mh; la = 0.5*la + 0.5*ma; src = "market"
+    fm_h = attack_mult(form_adjustments, home)
+    fm_a = attack_mult(form_adjustments, away)
     ch, ca = context_mult(home, away)
     av_h, av_a, note = availability_mult(home, away)
-    base = summarize(lh*ch, la*ca, dc.rho)
-    judg = summarize(lh*ch*av_h, la*ca*av_a, dc.rho)
+    base = summarize(lh*fm_h*ch, la*fm_a*ca, dc.rho)
+    judg = summarize(lh*fm_h*ch*av_h, la*fm_a*ca*av_a, dc.rho)
 
     # P5 -> per-match confidence interval via parameter-uncertainty bootstrap
     ih, ia = dc.idx[home], dc.idx[away]; g = 0.0 if neutral else dc.gamma
@@ -128,13 +135,13 @@ def predict_match(elo, dc, w, home, away, B=300):
         bh = w*ldh+(1-w)*leh; bla = w*lda+(1-w)*lea
         if mkt: bh = 0.5*bh+0.5*mh; bla = 0.5*bla+0.5*ma
         bh = min(8.0, max(0.05, bh)); bla = min(8.0, max(0.05, bla))
-        ws[b], ds[b], ls[b] = _wdl(bh*ch*av_h, bla*ca*av_a)
+        ws[b], ds[b], ls[b] = _wdl(bh*fm_h*ch*av_h, bla*fm_a*ca*av_a)
     ci = {"w":[round(float(np.percentile(ws,5)),3), round(float(np.percentile(ws,95)),3)],
           "d":[round(float(np.percentile(ds,5)),3), round(float(np.percentile(ds,95)),3)],
           "l":[round(float(np.percentile(ls,5)),3), round(float(np.percentile(ls,95)),3)]}
     # 6x6 scoreline grid (absolute probs) for the heatmap
     from engine import grid as _grid
-    G = _grid(lh*ch*av_h, la*ca*av_a, dc.rho, 8)
+    G = _grid(lh*fm_h*ch*av_h, la*fm_a*ca*av_a, dc.rho, 8)
     grid6 = [[round(float(G[i][j]),4) for j in range(6)] for i in range(6)]
     return base, judg, src, note, mkt, ci, grid6
 
@@ -365,7 +372,8 @@ def main():
           f"baseline={report['test']['baseline']['rps']}  market={report['test']['sharp_market_proxy']['rps']}")
 
     print("Running tournament Monte-Carlo with parameter uncertainty…")
-    pred = Predictor(elo, dc, w)
+    form_adjustments = build_form_adjustments(PLAYED)
+    pred = Predictor(elo, dc, w, form_adjustments=form_adjustments)
     sim = simulate(pred, n=20000)
     mp, bl = title_blend(sim["title"], sim["n"])
 
@@ -384,9 +392,10 @@ def main():
         h,a=f["home"],f["away"]
         played = PLAYED.get((h,a))
         host = (h in HOSTS) and (a not in HOSTS)
-        base,judg,src,note,mkt,ci,grid6 = predict_match(elo,dc,w,h,a)
+        base,judg,src,note,mkt,ci,grid6 = predict_match(elo,dc,w,h,a, form_adjustments=form_adjustments)
         ana = analysis_zh(h,a,judg,ci,mkt,note,host)
-        meta = match_metadata(h, a, played, UPDATE_STATUS, FRESH_RESULT_KEYS, HISTORICAL_RESULTS)
+        meta = match_metadata(h, a, played, UPDATE_STATUS, FRESH_RESULT_KEYS, HISTORICAL_RESULTS,
+                              form_adjustments=form_adjustments)
         matches.append({**f, "src":src, "note":note,
                         "played": list(played) if played else None,
                         "model": pack(base), "judgment": pack(judg),
@@ -406,6 +415,7 @@ def main():
              "generated":datetime.date.today().isoformat(),
              "generated_at":datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
              "update_status":UPDATE_STATUS,
+             "form_adjustments":form_adjustments,
              "ensemble_weight_dc":round(w,3),
              "backtest":report,"ratings":ratings,
              "matches":matches,"title":title}

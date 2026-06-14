@@ -183,6 +183,52 @@ class BacktestFeatureTests(unittest.TestCase):
         self.assertLessEqual(weight, 1.0)
 
 
+class FormAdjustmentFeatureTests(unittest.TestCase):
+    def test_form_adjustments_are_capped_after_extreme_single_match(self):
+        from form import build_form_adjustments
+
+        adjustments = build_form_adjustments({
+            ("Haiti", "Spain"): (6, 0),
+            ("Spain", "Haiti"): (0, 6),
+        })
+
+        self.assertLessEqual(adjustments["Haiti"]["attack_mult"], 1.03)
+        self.assertGreaterEqual(adjustments["Spain"]["attack_mult"], 0.97)
+        self.assertEqual(adjustments["Haiti"]["matches"], 1)
+        self.assertIn("状态微调", adjustments["Haiti"]["note"])
+
+    def test_predictor_applies_form_as_small_goal_multiplier(self):
+        import numpy as np
+        from tournament import Predictor
+        from data import TEAMS, ELO_PRIOR
+
+        class FakeElo:
+            r = dict(ELO_PRIOR)
+
+        class FakeDc:
+            teams = list(TEAMS)
+            idx = {team: i for i, team in enumerate(teams)}
+            att = np.zeros(len(teams))
+            dff = np.zeros(len(teams))
+            gamma = 0.0
+
+        plain = Predictor(FakeElo(), FakeDc(), w=0.0, rating_sigma=0, param_sigma=0)
+        adjusted = Predictor(
+            FakeElo(),
+            FakeDc(),
+            w=0.0,
+            rating_sigma=0,
+            param_sigma=0,
+            form_adjustments={"Mexico": {"attack_mult": 1.03}, "South Africa": {"attack_mult": 0.97}},
+        )
+
+        base_home, base_away = plain.lambdas("Mexico", "South Africa")
+        adj_home, adj_away = adjusted.lambdas("Mexico", "South Africa")
+
+        self.assertAlmostEqual(adj_home / base_home, 1.03, places=6)
+        self.assertAlmostEqual(adj_away / base_away, 0.97, places=6)
+
+
 class MainPayloadFeatureTests(unittest.TestCase):
     def test_match_payload_exposes_update_and_public_signal_metadata(self):
         from main import match_metadata
@@ -231,6 +277,26 @@ class MainPayloadFeatureTests(unittest.TestCase):
         )
 
         self.assertIn("比分来自 免费比分源", meta["public_signals"])
+
+    def test_match_payload_exposes_conservative_form_adjustments(self):
+        from main import match_metadata
+
+        meta = match_metadata(
+            "Mexico",
+            "South Korea",
+            played=None,
+            update_status={},
+            fresh_keys=set(),
+            historical_rows=[],
+            form_adjustments={
+                "Mexico": {"attack_mult": 1.018, "note": "状态微调上调 1.8%（封顶 ±3%）"},
+                "South Korea": {"attack_mult": 0.991, "note": "状态微调下调 0.9%（封顶 ±3%）"},
+            },
+        )
+
+        joined = " ".join(meta["public_signals"])
+        self.assertIn("Mexico 状态微调上调 1.8%", joined)
+        self.assertIn("South Korea 状态微调下调 0.9%", joined)
 
 
 if __name__ == "__main__":

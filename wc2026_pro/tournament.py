@@ -11,6 +11,7 @@ import math, random
 import numpy as np
 from data import GROUPS, HOSTS, PLAYED
 from engine import elo_lambdas, _goal_exp, _tau
+from form import attack_mult
 
 RR = [(0, 1), (2, 3), (0, 2), (3, 1), (3, 0), (1, 2)]   # 3 matchdays
 
@@ -37,9 +38,10 @@ def _h2h(order, results):
 
 class Predictor:
     """Produces (lh,la) for any tie, blending Elo + Dixon-Coles with per-sim noise."""
-    def __init__(self, elo, dc, w, rating_sigma=28, param_sigma=0.05):
+    def __init__(self, elo, dc, w, rating_sigma=28, param_sigma=0.05, form_adjustments=None):
         self.elo0 = dict(elo.r); self.dc = dc; self.w = w
         self.rs = rating_sigma; self.ps = param_sigma
+        self.form_adjustments = form_adjustments or {}
         self.reset()
     def reset(self):
         # P5: draw a fresh parameter set each tournament (uncertainty propagation)
@@ -56,6 +58,8 @@ class Predictor:
         ld_a = _goal_exp(self.att[ia] - self.dff[ih])
         lh = self.w*ld_h + (1-self.w)*le_h
         la = self.w*ld_a + (1-self.w)*le_a
+        lh *= attack_mult(self.form_adjustments, h)
+        la *= attack_mult(self.form_adjustments, a)
         return min(8.0, max(0.05, lh)), min(8.0, max(0.05, la))
     def shootout(self, a, b):
         ea, eb = self.elo[a], self.elo[b]
