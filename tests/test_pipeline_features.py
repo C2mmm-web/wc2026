@@ -15,6 +15,47 @@ def fixture(home, away, hg, ag, status="FT", date="2026-06-14T13:00:00+00:00"):
 
 
 class FetchResultsFeatureTests(unittest.TestCase):
+    def test_openfootball_history_payload_becomes_training_rows(self):
+        from fetch_results import openfootball_history_from_payload
+
+        payload = {
+            "name": "World Cup 2022",
+            "matches": [
+                {
+                    "round": "Matchday 1",
+                    "date": "2022-11-29",
+                    "team1": "USA",
+                    "team2": "Iran",
+                    "score": {"ft": [1, 0]},
+                },
+                {
+                    "round": "Final",
+                    "date": "2022-12-18",
+                    "team1": "Argentina",
+                    "team2": "France",
+                    "score": {"ft": [3, 3]},
+                },
+                {
+                    "round": "Matchday 1",
+                    "date": "2022-11-20",
+                    "team1": "Qatar",
+                    "team2": "Ecuador",
+                    "score": {"ft": [0, 2]},
+                },
+            ],
+        }
+
+        rows, status = openfootball_history_from_payload(payload, 2022, "unit://history.json")
+
+        self.assertEqual(status["status"], "success")
+        self.assertIn(("United States", "IR Iran", 1, 0), {
+            (r["home"], r["away"], r["home_goals"], r["away_goals"]) for r in rows
+        })
+        self.assertIn(("Argentina", "France", 3, 3), {
+            (r["home"], r["away"], r["home_goals"], r["away_goals"]) for r in rows
+        })
+        self.assertTrue(all(r["source"] == "openfootball_worldcup" for r in rows))
+
     def test_openfootball_payload_becomes_keyless_current_results(self):
         from fetch_results import openfootball_current_from_payload
 
@@ -141,6 +182,37 @@ class FetchResultsFeatureTests(unittest.TestCase):
         self.assertEqual(out["status"]["current_results"]["fallback_source"]["added_finished"], 1)
         self.assertEqual(out["status"]["current_results"]["fallback_source"]["skipped_placeholders"], 12)
 
+    def test_build_fetch_outputs_merges_free_historical_rows(self):
+        from fetch_results import build_fetch_outputs
+
+        out = build_fetch_outputs(
+            {"errors": {"plan": "blocked"}, "response": []},
+            [],
+            checked_at="2026-06-14T13:00:00Z",
+            fallback_history={
+                "status": "success",
+                "source": "openfootball/worldcup.json",
+                "seasons": [2018, 2022],
+                "rows": [
+                    {
+                        "date": "2018-07-15",
+                        "season": 2018,
+                        "home": "France",
+                        "away": "Croatia",
+                        "home_goals": 4,
+                        "away_goals": 2,
+                        "neutral": True,
+                        "source": "openfootball_worldcup",
+                    }
+                ],
+                "errors": [],
+            },
+        )
+
+        self.assertEqual(out["historical_results"][0]["home"], "France")
+        self.assertEqual(out["status"]["history"]["status"], "success")
+        self.assertEqual(out["status"]["history"]["free_source"]["rows"], 1)
+
     def test_build_fetch_outputs_default_timestamp_is_utc_iso(self):
         from fetch_results import build_fetch_outputs
 
@@ -176,11 +248,35 @@ class BacktestFeatureTests(unittest.TestCase):
             min_real_history_matches=40,
         )
 
-        self.assertEqual(report["data_source"], "api_football_history")
+        self.assertEqual(report["data_source"], "real_worldcup_history")
         self.assertEqual(report["n_history"], len(rows))
         self.assertIn("model", report["test"])
+        self.assertIn("calibration", report)
+        self.assertIn("wdl_temperature", report["calibration"])
         self.assertGreaterEqual(weight, 0.0)
         self.assertLessEqual(weight, 1.0)
+
+    def test_temperature_calibration_keeps_probabilities_normalized(self):
+        from calibration import apply_temperature, fit_temperature
+        from backtest import log_loss
+
+        probs = [
+            [0.85, 0.10, 0.05],
+            [0.80, 0.15, 0.05],
+            [0.75, 0.15, 0.10],
+            [0.70, 0.20, 0.10],
+        ]
+        ys = [1, 0, 2, 1]
+
+        temp = fit_temperature(probs, ys)
+        calibrated = [apply_temperature(p, temp) for p in probs]
+
+        self.assertAlmostEqual(sum(calibrated[0]), 1.0, places=7)
+        self.assertGreater(temp, 1.0)
+        self.assertLess(
+            sum(log_loss(p, y) for p, y in zip(calibrated, ys)),
+            sum(log_loss(p, y) for p, y in zip(probs, ys)),
+        )
 
 
 class FormAdjustmentFeatureTests(unittest.TestCase):

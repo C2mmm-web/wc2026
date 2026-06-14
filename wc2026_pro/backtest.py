@@ -8,6 +8,7 @@ falls back to a realistic synthetic history so the page still builds.
 import numpy as np
 from data import TEAMS, ELO_PRIOR
 from engine import EloModel, DixonColes, elo_lambdas, _pois
+from calibration import apply_temperature, fit_temperature
 
 rng = np.random.default_rng(2026)
 
@@ -92,6 +93,7 @@ def probs_from_lambdas(lh, la, rho=-0.05, maxg=10):
 def run_backtest(history_rows=None, min_real_history_matches=80):
     real_rows = rows_from_history(history_rows)
     use_real_history = len(real_rows) >= min_real_history_matches
+    real_sources = sorted({r.get("source", "unknown") for r in history_rows or [] if r.get("source")})
     rows = real_rows if use_real_history else gen_history()
     n_all = len(rows)
     i1, i2 = int(n_all*0.6), int(n_all*0.8)
@@ -106,14 +108,19 @@ def run_backtest(history_rows=None, min_real_history_matches=80):
         d.fit([(h, a, hg, ag, neu, decay_weight(date)) for h, a, hg, ag, neu, date in data])
         return e, d
 
-    def eval_w(e, d, matches, w):
+    def pred_probs(e, d, match, w):
+        h, a, _hg, _ag, neu, _date = match
+        le_h, le_a = elo_lambdas(e.r, h, a, neutral=neu)
+        ld_h, ld_a = d.lambdas(h, a, neutral=neu)
+        lh = w*ld_h + (1-w)*le_h; la = w*ld_a + (1-w)*le_a
+        lh = float(np.clip(lh, 0.05, 8.0)); la = float(np.clip(la, 0.05, 8.0))
+        return probs_from_lambdas(lh, la, d.rho)
+
+    def eval_w(e, d, matches, w, temperature=1.0):
         LL = BR = RP = 0.0
-        for h, a, hg, ag, neu, date in matches:
-            le_h, le_a = elo_lambdas(e.r, h, a, neutral=neu)
-            ld_h, ld_a = d.lambdas(h, a, neutral=neu)
-            lh = w*ld_h + (1-w)*le_h; la = w*ld_a + (1-w)*le_a
-            lh = float(np.clip(lh, 0.05, 8.0)); la = float(np.clip(la, 0.05, 8.0))
-            p = probs_from_lambdas(lh, la, d.rho)
+        for match in matches:
+            _h, _a, hg, ag, _neu, _date = match
+            p = apply_temperature(pred_probs(e, d, match, w), temperature)
             y = 0 if hg > ag else 1 if hg == ag else 2
             LL += log_loss(p, y); BR += brier(p, y); RP += rps(p, y)
         n = len(matches)
@@ -123,6 +130,9 @@ def run_backtest(history_rows=None, min_real_history_matches=80):
     e_sel, d_sel = fit_models(train)
     ws = np.linspace(0, 1, 21)
     w_star = float(ws[int(np.argmin([eval_w(e_sel, d_sel, val, w)[2] for w in ws]))])
+    val_probs = [pred_probs(e_sel, d_sel, m, w_star) for m in val]
+    val_y = [0 if hg > ag else 1 if hg == ag else 2 for _h, _a, hg, ag, _neu, _date in val]
+    wdl_temperature = fit_temperature(val_probs, val_y)
 
     # 2) refit on TRAIN+VAL for production-quality params, evaluate on untouched TEST
     elo, dc = fit_models(train + val)
@@ -131,7 +141,8 @@ def run_backtest(history_rows=None, min_real_history_matches=80):
     base = [ys.count(0)/len(ys), ys.count(1)/len(ys), ys.count(2)/len(ys)]
 
     # test metrics: model vs baselines vs sharp-market proxy
-    ll_m, br_m, rp_m = eval_w(elo, dc, test, w_star)
+    ll_raw, br_raw, rp_raw = eval_w(elo, dc, test, w_star)
+    ll_m, br_m, rp_m = eval_w(elo, dc, test, w_star, temperature=wdl_temperature)
     ll_e, br_e, rp_e = eval_w(elo, dc, test, 0.0)     # Elo-only
     ll_d, br_d, rp_d = eval_w(elo, dc, test, 1.0)     # DC-only
     LLb = BRb = RPb = 0.0
@@ -161,14 +172,20 @@ def run_backtest(history_rows=None, min_real_history_matches=80):
     report = {
         "n_train": len(train)+len(val), "n_test": n,
         "n_history": len(real_rows),
-        "data_source": "api_football_history" if use_real_history else "synthetic_fallback",
+        "data_source": "real_worldcup_history" if use_real_history else "synthetic_fallback",
+        "history_sources": real_sources if use_real_history else [],
         "ensemble_weight_DC": w_star,
         "test": {
             "model":      dict(logloss=round(ll_m,4), brier=round(br_m,4), rps=round(rp_m,4)),
+            "raw_model":  dict(logloss=round(ll_raw,4), brier=round(br_raw,4), rps=round(rp_raw,4)),
             "elo_only":   dict(logloss=round(ll_e,4), brier=round(br_e,4), rps=round(rp_e,4)),
             "dc_only":    dict(logloss=round(ll_d,4), brier=round(br_d,4), rps=round(rp_d,4)),
             "baseline":   dict(logloss=round(LLb/n,4), brier=round(BRb/n,4), rps=round(RPb/n,4)),
             "sharp_market_proxy": dict(logloss=round(LLk/n,4), brier=round(BRk/n,4), rps=round(RPk/n,4)),
+        },
+        "calibration": {
+            "method": "wdl_temperature_scaling",
+            "wdl_temperature": round(wdl_temperature, 3),
         },
         "calibration_home_win": calib,
         "dc_gamma": round(dc.gamma,3), "dc_rho": round(dc.rho,3),

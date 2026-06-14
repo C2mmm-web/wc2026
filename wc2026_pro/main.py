@@ -13,6 +13,7 @@ from engine import (elo_lambdas, context_mult, availability_mult, summarize,
 from backtest import run_backtest
 from tournament import Predictor, simulate
 from form import attack_mult, build_form_adjustments
+from calibration import apply_temperature
 
 HERE = os.path.dirname(__file__)
 TEMPLATE_MD = {1: [(0,1),(2,3)], 2: [(0,2),(3,1)], 3: [(3,0),(1,2)]}
@@ -104,6 +105,16 @@ def _wdl(lh, la):
     M = np.outer(_pvec(lh), _pvec(la)); M /= M.sum()
     return float(np.tril(M,-1).sum()), float(np.trace(M)), float(np.triu(M,1).sum())
 
+def _calibrate_summary_wdl(summary, temperature):
+    if not temperature or abs(float(temperature) - 1.0) < 1e-9:
+        return summary
+    out = dict(summary)
+    out["w"], out["d"], out["l"] = apply_temperature(
+        [summary["w"], summary["d"], summary["l"]],
+        temperature,
+    )
+    return out
+
 def _result_code(hg, ag):
     return "H" if hg > ag else "D" if hg == ag else "A"
 
@@ -193,7 +204,7 @@ def advanced_markets(lh, la, rho, home, away):
         "htft": {"rows": rows},
     }
 
-def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None):
+def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None, wdl_temperature=1.0):
     host = (home in HOSTS) and (away not in HOSTS)
     neutral = not host
     le_h, le_a = elo_lambdas(elo.r, home, away, neutral=neutral)
@@ -209,8 +220,8 @@ def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None):
     fm_a = attack_mult(form_adjustments, away)
     ch, ca = context_mult(home, away)
     av_h, av_a, note = availability_mult(home, away)
-    base = summarize(lh*fm_h*ch, la*fm_a*ca, dc.rho)
-    judg = summarize(lh*fm_h*ch*av_h, la*fm_a*ca*av_a, dc.rho)
+    base = _calibrate_summary_wdl(summarize(lh*fm_h*ch, la*fm_a*ca, dc.rho), wdl_temperature)
+    judg = _calibrate_summary_wdl(summarize(lh*fm_h*ch*av_h, la*fm_a*ca*av_a, dc.rho), wdl_temperature)
 
     # P5 -> per-match confidence interval via parameter-uncertainty bootstrap
     ih, ia = dc.idx[home], dc.idx[away]; g = 0.0 if neutral else dc.gamma
@@ -224,7 +235,8 @@ def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None):
         bh = w*ldh+(1-w)*leh; bla = w*lda+(1-w)*lea
         if mkt: bh = 0.5*bh+0.5*mh; bla = 0.5*bla+0.5*ma
         bh = min(8.0, max(0.05, bh)); bla = min(8.0, max(0.05, bla))
-        ws[b], ds[b], ls[b] = _wdl(bh*fm_h*ch*av_h, bla*fm_a*ca*av_a)
+        wb, db, lb = _wdl(bh*fm_h*ch*av_h, bla*fm_a*ca*av_a)
+        ws[b], ds[b], ls[b] = apply_temperature([wb, db, lb], wdl_temperature)
     ci = {"w":[round(float(np.percentile(ws,5)),3), round(float(np.percentile(ws,95)),3)],
           "d":[round(float(np.percentile(ds,5)),3), round(float(np.percentile(ds,95)),3)],
           "l":[round(float(np.percentile(ls,5)),3), round(float(np.percentile(ls,95)),3)]}
@@ -466,13 +478,14 @@ PRED.title.slice(0,16).forEach((r,i)=>{th+=`<tr><td class="mut">${i+1}</td><td>$
 document.getElementById("title").innerHTML=th+'</tbody></table><small>“综合” = 模型 + 博彩夺冠盘口；“纯模型” = 引擎蒙特卡洛（含参数不确定性）。</small>';
 const bt=PRED.backtest,T=bt.test;
 const mrow=(l,o,b)=>`<tr><td>${l}</td><td class="n ${b?'best':''}">${o.logloss}</td><td class="n ${b?'best':''}">${o.brier}</td><td class="n ${b?'best':''}">${o.rps}</td></tr>`;
-const source=bt.data_source=="api_football_history"?"真实历史赛果":"拟真回退样本";
+const source=bt.data_source=="real_worldcup_history"||bt.data_source=="api_football_history"?"真实世界杯历史赛果":"拟真回退样本";
+const calib=bt.calibration||{};
 document.getElementById("modelcard").innerHTML=
- `<div><span class="metric">训练来源 <b>${source}</b></span><span class="metric">历史样本 <b>${bt.n_history||0}</b></span><span class="metric">集成权重(Dixon-Coles) <b>${pct(PRED.ensemble_weight_dc)}%</b></span><span class="metric">主场优势 γ <b>${bt.dc_gamma}</b></span><span class="metric">低比分相关 ρ <b>${bt.dc_rho}</b></span><span class="metric">测试样本 <b>${bt.n_test}</b></span></div>
+ `<div><span class="metric">训练来源 <b>${source}</b></span><span class="metric">历史样本 <b>${bt.n_history||0}</b></span><span class="metric">集成权重(Dixon-Coles) <b>${pct(PRED.ensemble_weight_dc)}%</b></span><span class="metric">WDL 校准温度 <b>${calib.wdl_temperature||1}</b></span><span class="metric">主场优势 γ <b>${bt.dc_gamma}</b></span><span class="metric">低比分相关 ρ <b>${bt.dc_rho}</b></span><span class="metric">测试样本 <b>${bt.n_test}</b></span></div>
  <table class="tbl" style="margin-top:10px"><thead><tr><th>模型（留出测试集）</th><th class="n">LogLoss</th><th class="n">Brier</th><th class="n">RPS↓</th></tr></thead><tbody>
- ${mrow("本模型",T.model,1)}${mrow("仅 Elo",T.elo_only)}${mrow("仅 Dixon-Coles",T.dc_only)}${mrow("朴素基准",T.baseline)}${mrow("锐利盘口基准",T.sharp_market_proxy)}</tbody></table>
+ ${mrow("本模型（校准后）",T.model,1)}${T.raw_model?mrow("本模型（未校准）",T.raw_model):""}${mrow("仅 Elo",T.elo_only)}${mrow("仅 Dixon-Coles",T.dc_only)}${mrow("朴素基准",T.baseline)}${mrow("锐利盘口基准",T.sharp_market_proxy)}</tbody></table>
  <small>数值越低越好。Brier / LogLoss / RPS 衡量的是概率准不准，比“精确比分”更有价值；精确比分本身随机性很高，最可能比分通常只是方向参考。</small>
- <div class="note" style="margin-top:12px">数据说明：云端会优先用 API-Football 拉到的真实历史赛果重新拟合；若 API 当次不可用或历史样本不足，页面会明确显示为“拟真回退样本”，不会假装成真实历史。</div>`;
+ <div class="note" style="margin-top:12px">数据说明：云端会优先用 API-Football + openfootball 历史赛果重新拟合；胜平负概率使用验证集 temperature scaling 做校准。若历史样本不足，页面会明确显示为“拟真回退样本”，不会假装成真实历史。</div>`;
 chips();list();</script></body></html>"""
 
 def build_site(payload):
@@ -484,6 +497,7 @@ def build_site(payload):
 def main():
     print("Backtesting / fitting models on history…")
     report, elo, dc, w = run_backtest(history_rows=HISTORICAL_RESULTS, min_real_history_matches=40)
+    wdl_temperature = report.get("calibration", {}).get("wdl_temperature", 1.0)
     print(f"  ensemble weight (Dixon-Coles share) = {w:.2f}")
     print(f"  test RPS  model={report['test']['model']['rps']}  "
           f"elo={report['test']['elo_only']['rps']}  dc={report['test']['dc_only']['rps']}  "
@@ -510,7 +524,8 @@ def main():
         h,a=f["home"],f["away"]
         played = PLAYED.get((h,a))
         host = (h in HOSTS) and (a not in HOSTS)
-        base,judg,src,note,mkt,ci,grid6,advanced = predict_match(elo,dc,w,h,a, form_adjustments=form_adjustments)
+        base,judg,src,note,mkt,ci,grid6,advanced = predict_match(
+            elo,dc,w,h,a, form_adjustments=form_adjustments, wdl_temperature=wdl_temperature)
         ana = analysis_zh(h,a,judg,ci,mkt,note,host)
         meta = match_metadata(h, a, played, UPDATE_STATUS, FRESH_RESULT_KEYS, HISTORICAL_RESULTS,
                               form_adjustments=form_adjustments)

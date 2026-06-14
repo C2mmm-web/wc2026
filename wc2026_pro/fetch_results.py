@@ -26,6 +26,8 @@ OPENFOOTBALL_CURRENT_URL = (
     "https://raw.githubusercontent.com/upbound-web/worldcup-live.json/"
     "master/2026/worldcup.json"
 )
+OPENFOOTBALL_HISTORY_SEASONS = (2014, 2018, 2022)
+OPENFOOTBALL_HISTORY_URL = "https://raw.githubusercontent.com/openfootball/worldcup.json/master/{season}/worldcup.json"
 
 # --- map API-Football country names -> our canonical team names ---
 def norm(s):
@@ -137,6 +139,61 @@ def openfootball_current_from_payload(payload, source_url=OPENFOOTBALL_CURRENT_U
         "skipped_placeholders": skipped_placeholders,
     }
 
+def openfootball_history_from_payload(payload, season, source_url):
+    rows, unknown = [], set()
+    for match in payload.get("matches", []):
+        raw_home = match.get("team1")
+        raw_away = match.get("team2")
+        home = resolve(raw_home or "")
+        away = resolve(raw_away or "")
+        if not home or not away:
+            if raw_home and not home and not _is_openfootball_placeholder(raw_home):
+                unknown.add(raw_home)
+            if raw_away and not away and not _is_openfootball_placeholder(raw_away):
+                unknown.add(raw_away)
+            continue
+        score = match.get("score") or {}
+        ft = score.get("ft")
+        if not (isinstance(ft, list) and len(ft) >= 2 and ft[0] is not None and ft[1] is not None):
+            continue
+        rows.append({
+            "date": match.get("date"),
+            "season": season,
+            "home": home,
+            "away": away,
+            "home_goals": int(ft[0]),
+            "away_goals": int(ft[1]),
+            "neutral": True,
+            "source": "openfootball_worldcup",
+        })
+    return rows, {
+        "status": "success",
+        "season": season,
+        "url": source_url,
+        "rows": len(rows),
+        "unknown_names": sorted(unknown),
+    }
+
+def fetch_openfootball_history(seasons=OPENFOOTBALL_HISTORY_SEASONS):
+    all_rows, statuses, errors = [], [], []
+    for season in seasons:
+        url = OPENFOOTBALL_HISTORY_URL.format(season=season)
+        try:
+            with urllib.request.urlopen(url, timeout=25) as r:
+                rows, status = openfootball_history_from_payload(json.load(r), season, url)
+            all_rows.extend(rows)
+            statuses.append(status)
+        except Exception as e:
+            errors.append({"season": season, "url": url, "error": str(e)[:180]})
+    return {
+        "status": "success" if all_rows else ("error" if errors else "empty"),
+        "source": "openfootball/worldcup.json",
+        "seasons": list(seasons),
+        "rows": all_rows,
+        "season_status": statuses,
+        "errors": errors,
+    }
+
 def _merge_fallback_current(finished, upcoming, unknown, fallback_current):
     if not fallback_current or fallback_current.get("status") != "success":
         return 0, 0
@@ -158,7 +215,7 @@ def _merge_fallback_current(finished, upcoming, unknown, fallback_current):
     unknown.update(fallback_current.get("unknown_names", []))
     return added_finished, added_upcoming
 
-def build_fetch_outputs(current_data, history_payloads, previous_results=None, checked_at=None, fallback_current=None):
+def build_fetch_outputs(current_data, history_payloads, previous_results=None, checked_at=None, fallback_current=None, fallback_history=None):
     checked_at = checked_at or datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     previous_results = previous_results or {}
     finished, upcoming, unknown = {}, [], set()
@@ -189,6 +246,30 @@ def build_fetch_outputs(current_data, history_payloads, previous_results=None, c
     historical = []
     history_errors = []
     seen_history = set()
+    def add_history_row(row):
+        try:
+            season = row.get("season")
+            h, a = row.get("home"), row.get("away")
+            hg, ag = int(row.get("home_goals")), int(row.get("away_goals"))
+        except (TypeError, ValueError):
+            return False
+        dedupe = (season, row.get("date"), h, a)
+        if not h or not a or dedupe in seen_history:
+            return False
+        seen_history.add(dedupe)
+        historical.append({
+            "date": row.get("date"),
+            "season": season,
+            "league": row.get("league"),
+            "home": h,
+            "away": a,
+            "home_goals": hg,
+            "away_goals": ag,
+            "neutral": bool(row.get("neutral", True)),
+            "source": row.get("source", "api_football"),
+        })
+        return True
+
     for payload in history_payloads:
         season = payload.get("season")
         data = payload.get("data", {})
@@ -204,11 +285,7 @@ def build_fetch_outputs(current_data, history_payloads, previous_results=None, c
             gh = fx["goals"]["home"]; ga = fx["goals"]["away"]
             if status not in FT or gh is None or ga is None:
                 continue
-            dedupe = (season, fx["fixture"].get("date"), h, a)
-            if dedupe in seen_history:
-                continue
-            seen_history.add(dedupe)
-            historical.append({
+            add_history_row({
                 "date": fx["fixture"].get("date"),
                 "season": season,
                 "league": payload.get("league"),
@@ -217,7 +294,13 @@ def build_fetch_outputs(current_data, history_payloads, previous_results=None, c
                 "home_goals": int(gh),
                 "away_goals": int(ga),
                 "neutral": True,
+                "source": "api_football",
             })
+    free_history_rows = 0
+    if fallback_history and fallback_history.get("status") == "success":
+        for row in fallback_history.get("rows", []):
+            if add_history_row(row):
+                free_history_rows += 1
     historical.sort(key=lambda r: r.get("date") or "")
 
     if current_errors and fallback_current and fallback_current.get("status") == "success":
@@ -255,6 +338,13 @@ def build_fetch_outputs(current_data, history_payloads, previous_results=None, c
                 "matches": len(historical),
                 "seasons": [p.get("season") for p in history_payloads],
                 "errors": history_errors or None,
+                "free_source": {
+                    "status": fallback_history.get("status"),
+                    "source": fallback_history.get("source"),
+                    "seasons": fallback_history.get("seasons"),
+                    "rows": free_history_rows,
+                    "errors": fallback_history.get("errors") or None,
+                } if fallback_history else None,
             },
             "unknown_api_names": sorted(unknown),
         },
@@ -287,17 +377,30 @@ def main():
             "upcoming": [],
             "unknown_names": [],
         }
+    try:
+        fallback_history = fetch_openfootball_history()
+    except Exception as e:
+        print("[fetch_results] openfootball history unavailable:", e)
+        fallback_history = {
+            "status": "error",
+            "source": "openfootball/worldcup.json",
+            "seasons": list(OPENFOOTBALL_HISTORY_SEASONS),
+            "rows": [],
+            "errors": [{"error": str(e)[:180]}],
+        }
     if not API_FOOTBALL_KEY:
         outputs = build_fetch_outputs(
             {"errors": {"auth": "API_FOOTBALL_KEY is not set"}, "response": []},
             [],
             previous_results=previous,
             fallback_current=fallback_current,
+            fallback_history=fallback_history,
         )
         outputs["status"]["previous_site"] = previous_status
         if outputs["status"]["current_results"]["status"] != "fallback_success":
             outputs["status"]["current_results"]["status"] = "no_key"
-        outputs["status"]["history"]["status"] = "no_key"
+        if not outputs["historical_results"]:
+            outputs["status"]["history"]["status"] = "no_key"
         write_outputs(outputs)
         print("[fetch_results] no API key set — wrote keyless current results from fallback source")
         return
@@ -323,7 +426,8 @@ def main():
                 "season": season,
                 "data": {"errors": {"request": str(e)}, "response": []},
             })
-    outputs = build_fetch_outputs(data, history_payloads, previous_results=previous, fallback_current=fallback_current)
+    outputs = build_fetch_outputs(data, history_payloads, previous_results=previous,
+                                  fallback_current=fallback_current, fallback_history=fallback_history)
     outputs["status"]["previous_site"] = previous_status
 
     write_outputs(outputs)
