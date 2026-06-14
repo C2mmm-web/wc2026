@@ -62,7 +62,9 @@ def match_metadata(home, away, played, update_status, fresh_keys, historical_row
     if (home, away) in MARKET_MATCH:
         signals.append("含公开盘口校准")
     if played and api_played:
-        signals.append("比分来自 API-Football")
+        current_status = (update_status or {}).get("current_results", {}).get("status")
+        source = "免费比分源" if current_status == "fallback_success" else "API-Football"
+        signals.append(f"比分来自 {source}")
     return {
         "fresh": bool(fresh),
         "played_source": "api" if api_played else ("manual" if played else None),
@@ -245,12 +247,14 @@ small{color:var(--mut);font-size:12px;line-height:1.6;display:block}
 const GROUPS={};PRED.matches.forEach(m=>{(GROUPS[m.group]=GROUPS[m.group]||1)});const gkeys=Object.keys(GROUPS).sort();
 const pct=x=>(x*100).toFixed(0);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const ST=PRED.update_status||{},CR=ST.current_results||{},HS=ST.history||{};
+const ST=PRED.update_status||{},CR=ST.current_results||{},HS=ST.history||{},FB=CR.fallback_source||{};
 const checked=ST.checked_at?ST.checked_at.replace("T"," ").replace("Z"," UTC"):"未运行云端拉取";
-const apiReason=CR.errors?` · ${esc(JSON.stringify(CR.errors)).slice(0,90)}`:"";
+const dataLabel=CR.status=="fallback_success"?"免费比分源":"API 比分";
+const apiReason=CR.errors&&CR.status!="fallback_success"?` · ${esc(JSON.stringify(CR.errors)).slice(0,90)}`:"";
+const sourceNote=CR.status=="fallback_success"&&FB.source?` · ${esc(FB.source)}`:"";
 document.getElementById("sub").innerHTML=`Dixon-Coles + Elo 集成模型 · 版本 v${PRED.version} · 数据日期 ${PRED.generated}<br>点击任意一场，查看比分概率、置信区间、公开信号和文字解读。`;
 document.getElementById("status").innerHTML=
- `<span>最后云端更新 <b>${checked}</b></span><span>API 比分 <b>${CR.status||"not_run"}</b> · 完赛 ${CR.finished||0} · 待赛 ${CR.upcoming||0}${apiReason}</span><span>历史拟合 <b>${HS.status||"not_run"}</b> · 样本 ${HS.matches||0}</span>`;
+ `<span>最后云端更新 <b>${checked}</b></span><span>${dataLabel} <b>${CR.status||"not_run"}</b> · 完赛 ${CR.finished||0} · 待赛 ${CR.upcoming||0}${sourceNote}${apiReason}</span><span>历史拟合 <b>${HS.status||"not_run"}</b> · 样本 ${HS.matches||0}</span>`;
 
 /* ---- filters + list ---- */
 let curMD=1,curGP="all";

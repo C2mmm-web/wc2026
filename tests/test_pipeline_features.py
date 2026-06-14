@@ -15,6 +15,63 @@ def fixture(home, away, hg, ag, status="FT", date="2026-06-14T13:00:00+00:00"):
 
 
 class FetchResultsFeatureTests(unittest.TestCase):
+    def test_openfootball_payload_becomes_keyless_current_results(self):
+        from fetch_results import openfootball_current_from_payload
+
+        payload = {
+            "name": "World Cup 2026",
+            "matches": [
+                {
+                    "round": "Matchday 1",
+                    "date": "2026-06-11",
+                    "time": "13:00 UTC-6",
+                    "team1": "Mexico",
+                    "team2": "South Africa",
+                    "score": {"ft": [2, 0], "ht": [1, 0]},
+                },
+                {
+                    "round": "Matchday 2",
+                    "date": "2026-06-12",
+                    "time": "15:00 UTC-4",
+                    "team1": "Canada",
+                    "team2": "Bosnia & Herzegovina",
+                    "score": {"ft": [1, 1]},
+                },
+                {
+                    "round": "Matchday 4",
+                    "date": "2026-06-14",
+                    "time": "18:00 UTC-5",
+                    "team1": "USA",
+                    "team2": "Turkey",
+                    "score": {"ft": [4, 1]},
+                },
+                {
+                    "round": "Matchday 8",
+                    "date": "2026-06-18",
+                    "time": "12:00 UTC-4",
+                    "team1": "Czech Republic",
+                    "team2": "South Africa",
+                },
+                {
+                    "round": "Round of 32",
+                    "date": "2026-06-28",
+                    "team1": "W73",
+                    "team2": "3A/B/C/D/F",
+                },
+            ],
+        }
+
+        out = openfootball_current_from_payload(payload, "unit://worldcup.json")
+
+        self.assertEqual(out["finished"]["Mexico|South Africa"], [2, 0])
+        self.assertEqual(out["finished"]["Canada|Bosnia and Herzegovina"], [1, 1])
+        self.assertEqual(out["finished"]["United States|Türkiye"], [4, 1])
+        self.assertEqual(out["upcoming"][0]["home"], "Czechia")
+        self.assertEqual(out["upcoming"][0]["away"], "South Africa")
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["skipped_placeholders"], 1)
+        self.assertEqual(out["unknown_names"], [])
+
     def test_build_fetch_outputs_records_status_history_and_fresh_results(self):
         from fetch_results import build_fetch_outputs
 
@@ -57,6 +114,39 @@ class FetchResultsFeatureTests(unittest.TestCase):
         self.assertEqual(out["status"]["current_results"]["status"], "success")
         self.assertEqual(out["status"]["history"]["status"], "success")
         self.assertEqual(out["status"]["history"]["matches"], 2)
+
+    def test_build_fetch_outputs_uses_free_fallback_when_api_current_errors(self):
+        from fetch_results import build_fetch_outputs
+
+        fallback = {
+            "status": "success",
+            "source": "upbound-web/worldcup-live.json",
+            "url": "unit://worldcup.json",
+            "finished": {"Australia|Türkiye": [2, 0]},
+            "upcoming": [{"home": "Germany", "away": "Curaçao", "status": "NS", "date": "2026-06-14"}],
+            "unknown_names": [],
+            "skipped_placeholders": 12,
+        }
+
+        out = build_fetch_outputs(
+            {"errors": {"plan": "Free plans do not have access to this season"}, "response": []},
+            [],
+            previous_results={},
+            checked_at="2026-06-14T13:00:00Z",
+            fallback_current=fallback,
+        )
+
+        self.assertEqual(out["finished"]["Australia|Türkiye"], [2, 0])
+        self.assertEqual(out["status"]["current_results"]["status"], "fallback_success")
+        self.assertEqual(out["status"]["current_results"]["fallback_source"]["added_finished"], 1)
+        self.assertEqual(out["status"]["current_results"]["fallback_source"]["skipped_placeholders"], 12)
+
+    def test_build_fetch_outputs_default_timestamp_is_utc_iso(self):
+        from fetch_results import build_fetch_outputs
+
+        out = build_fetch_outputs({"errors": [], "response": []}, [])
+
+        self.assertTrue(out["status"]["checked_at"].endswith("Z"))
 
 
 class BacktestFeatureTests(unittest.TestCase):
@@ -121,6 +211,26 @@ class MainPayloadFeatureTests(unittest.TestCase):
         self.assertEqual(meta["played_source"], "api")
         self.assertIn("最近战绩", " ".join(meta["public_signals"]))
         self.assertEqual(meta["update_status"]["current_results"]["status"], "success")
+
+    def test_match_payload_names_free_fallback_source_for_played_scores(self):
+        from main import match_metadata
+
+        status = {
+            "checked_at": "2026-06-14T13:00:00Z",
+            "current_results": {"status": "fallback_success", "finished": 8, "upcoming": 96},
+            "history": {"status": "no_key", "matches": 0},
+        }
+
+        meta = match_metadata(
+            "Australia",
+            "Türkiye",
+            played=(2, 0),
+            update_status=status,
+            fresh_keys={"Australia|Türkiye"},
+            historical_rows=[],
+        )
+
+        self.assertIn("比分来自 免费比分源", meta["public_signals"])
 
 
 if __name__ == "__main__":
