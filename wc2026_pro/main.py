@@ -104,6 +104,95 @@ def _wdl(lh, la):
     M = np.outer(_pvec(lh), _pvec(la)); M /= M.sum()
     return float(np.tril(M,-1).sum()), float(np.trace(M)), float(np.triu(M,1).sum())
 
+def _result_code(hg, ag):
+    return "H" if hg > ag else "D" if hg == ag else "A"
+
+def _result_label(code, home, away):
+    return {"H": home, "D": "Draw", "A": away}[code]
+
+def _handicap_line(lh, la):
+    diff = lh - la
+    if diff >= 1.25:
+        return -2
+    if diff >= 0.55:
+        return -1
+    if diff <= -1.25:
+        return 2
+    if diff <= -0.55:
+        return 1
+    return 0
+
+def advanced_markets(lh, la, rho, home, away):
+    from engine import grid as _grid
+    ft = _grid(lh, la, rho, 11)
+    total_probs = {"0-1": 0.0, "2-3": 0.0, "4+": 0.0}
+    ou25_over = 0.0
+    hcap = _handicap_line(lh, la)
+    hcap_probs = {"H": 0.0, "D": 0.0, "A": 0.0}
+    for hg in range(ft.shape[0]):
+        for ag in range(ft.shape[1]):
+            prob = float(ft[hg][ag])
+            total = hg + ag
+            if total <= 1:
+                total_probs["0-1"] += prob
+            elif total <= 3:
+                total_probs["2-3"] += prob
+            else:
+                total_probs["4+"] += prob
+            if total > 2.5:
+                ou25_over += prob
+            adj_home = hg + hcap
+            hcap_probs[_result_code(adj_home, ag)] += prob
+
+    h1 = _grid(lh * 0.44, la * 0.44, rho, 7)
+    h2 = _grid(lh * 0.56, la * 0.56, rho, 7)
+    htft = {ht: {ftc: 0.0 for ftc in ("H", "D", "A")} for ht in ("H", "D", "A")}
+    for hh in range(h1.shape[0]):
+        for ha in range(h1.shape[1]):
+            hprob = float(h1[hh][ha])
+            ht_code = _result_code(hh, ha)
+            for sh in range(h2.shape[0]):
+                for sa in range(h2.shape[1]):
+                    prob = hprob * float(h2[sh][sa])
+                    ft_code = _result_code(hh + sh, ha + sa)
+                    htft[ht_code][ft_code] += prob
+
+    rows = []
+    for ht in ("H", "D", "A"):
+        rows.append({
+            "ht": ht,
+            "label": _result_label(ht, home, away),
+            "cells": {
+                ftc: {"label": _result_label(ftc, home, away), "prob": round(htft[ht][ftc], 4)}
+                for ftc in ("H", "D", "A")
+            },
+        })
+    return {
+        "totals": {
+            "xg_total": round(lh + la, 2),
+            "buckets": [
+                {"label": "TG 0-1", "prob": round(total_probs["0-1"], 4)},
+                {"label": "TG 2-3", "prob": round(total_probs["2-3"], 4)},
+                {"label": "TG 4+", "prob": round(total_probs["4+"], 4)},
+            ],
+            "over_under": [
+                {"label": "Over 2.5", "line": 2.5, "prob": round(ou25_over, 4)},
+                {"label": "Under 2.5", "line": 2.5, "prob": round(1 - ou25_over, 4)},
+            ],
+        },
+        "handicap": {
+            "type": "3-way",
+            "home_hcap": hcap,
+            "label": f"{home} {hcap:+d}",
+            "outcomes": [
+                {"code": "H", "label": "Hcap H", "prob": round(hcap_probs["H"], 4)},
+                {"code": "D", "label": "Hcap D", "prob": round(hcap_probs["D"], 4)},
+                {"code": "A", "label": "Hcap A", "prob": round(hcap_probs["A"], 4)},
+            ],
+        },
+        "htft": {"rows": rows},
+    }
+
 def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None):
     host = (home in HOSTS) and (away not in HOSTS)
     neutral = not host
@@ -143,7 +232,8 @@ def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None):
     from engine import grid as _grid
     G = _grid(lh*fm_h*ch*av_h, la*fm_a*ca*av_a, dc.rho, 8)
     grid6 = [[round(float(G[i][j]),4) for j in range(6)] for i in range(6)]
-    return base, judg, src, note, mkt, ci, grid6
+    adv = advanced_markets(lh*fm_h*ch*av_h, la*fm_a*ca*av_a, dc.rho, home, away)
+    return base, judg, src, note, mkt, ci, grid6, adv
 
 LEVELS = [(220,"实力差距悬殊"),(120,"明显优势"),(45,"略占上风"),(0,"几乎五五开")]
 def analysis_zh(home, away, judg, ci, mkt, note, host):
@@ -238,6 +328,10 @@ small{color:var(--mut);font-size:12px;line-height:1.6;display:block}
 .flow{display:flex;height:9px;border-radius:5px;overflow:hidden;margin:7px 0 11px}
 .note{background:#160f24;border:1px solid #3a2a52;border-radius:12px;padding:14px 16px;font-size:13.5px;line-height:1.75;color:#e2d8f4}
 .kv{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--mut);margin-top:6px}.kv b{color:#fff}
+.adv{display:grid;gap:9px}.advrow{display:grid;grid-template-columns:92px 1fr 54px;align-items:center;gap:9px;font-size:12px;color:#d8e1f4}
+.advbar{height:18px;background:#0e1530;border:1px solid var(--line);border-radius:5px;overflow:hidden}.advbar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2))}
+.advval{text-align:right;font-variant-numeric:tabular-nums;color:#fff}.hcapline{font-size:12px;color:var(--mut);margin-bottom:8px}.hcapline b{color:var(--gold)}
+.htft{display:grid;grid-template-columns:64px repeat(3,1fr);gap:4px;font-size:11px}.htft span{min-height:34px;border-radius:6px;background:#0e1530;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;text-align:center;padding:4px;color:#dfe7fb;font-variant-numeric:tabular-nums}.htft .hd{color:var(--mut);background:transparent;border-color:transparent}.htft .hot{outline:2px solid var(--gold);font-weight:700;color:#fff}
 </style></head><body><div class="wrap">
 <h1>⚽ 2026 世界杯预测 <span style="font-size:12px;color:var(--pur);font-weight:600">PRO</span></h1>
 <div class="sub" id="sub"></div>
@@ -297,6 +391,13 @@ function heat(m){const G=m.grid6;let mx=0;G.forEach(r=>r.forEach(v=>mx=Math.max(
    h+=`<span class="hc ${i==ti&&j==tj?'top':''}" style="background:rgba(34,211,166,${a.toFixed(3)})" title="${m.home} ${i}-${j} ${m.away}: ${pct(v)}%">${v>=0.04?pct(v):''}</span>`;}}
  h+='</div><div class="legend">纵轴 = '+m.home+' 进球数，横轴 = '+m.away+' 进球数；颜色越亮概率越高，金框为最可能比分。</div>';
  return h;}
+function advRows(items,color){
+ return `<div class="adv">${items.map(x=>`<div class="advrow"><span>${x.label}</span><span class="advbar"><i style="width:${x.prob*100}%;background:${color||'linear-gradient(90deg,var(--acc),var(--acc2))'}"></i></span><span class="advval">${pct(x.prob)}%</span></div>`).join("")}</div>`;}
+function htft(m){const rows=m.advanced.htft.rows,cols=["H","D","A"];let mx=0;
+ rows.forEach(r=>cols.forEach(c=>mx=Math.max(mx,r.cells[c].prob)));
+ let h='<div class="htft"><span class="hd">HT \\ FT</span><span class="hd">H</span><span class="hd">D</span><span class="hd">A</span>';
+ rows.forEach(r=>{h+=`<span class="hd">${r.ht}</span>`;cols.forEach(c=>{const v=r.cells[c].prob,a=Math.max(.08,Math.pow(v/mx,.7));h+=`<span class="${v==mx?'hot':''}" style="background:rgba(34,211,166,${a.toFixed(3)})" title="HT/FT ${r.ht}/${c}: ${pct(v)}%">${r.ht}/${c}<br>${pct(v)}%</span>`})});
+ return h+'</div><div class="legend">H = 主胜，D = 平局，A = 客胜；金框为最高概率 HT/FT 组合。</div>';}
 function report(m){const r=m.judgment,ci=m.ci,p=m.played;
  const fav=r.w>=r.l?m.home:m.away, fp=Math.max(r.w,r.l);
  const conf=fp>0.58&&(ci.w[1]-ci.w[0]<0.2||ci.l[1]-ci.l[0]<0.2)?"把握较高":fp>0.45?"把握中等":"胜负难料";
@@ -319,6 +420,23 @@ function report(m){const r=m.judgment,ci=m.ci,p=m.played;
   ${wrow("平局",r.d,ci.d,"#54608a")}
   ${wrow(m.away+" 胜",r.l,ci.l,"var(--gold)")}
   ${cmp}
+
+  <div class="seclab">Totals · O/U 2.5 · Total Goals</div>
+  <div class="hb">
+    <div class="hr"><span>xG Total</span><span><b style="color:#fff">${m.advanced.totals.xg_total}</b></span></div>
+    ${advRows(m.advanced.totals.buckets)}
+    <div style="height:8px"></div>
+    ${advRows(m.advanced.totals.over_under,'linear-gradient(90deg,var(--gold),var(--red))')}
+  </div>
+
+  <div class="seclab">Handicap 3-Way · 让球胜平负</div>
+  <div class="hb">
+    <div class="hcapline">Line: <b>${m.advanced.handicap.label}</b> · Type: <b>${m.advanced.handicap.type}</b></div>
+    ${advRows(m.advanced.handicap.outcomes,'linear-gradient(90deg,var(--pur),var(--acc))')}
+  </div>
+
+  <div class="seclab">HT/FT · 半全场</div>
+  ${htft(m)}
 
   <div class="seclab">比分概率分布</div>${heat(m)}
 
@@ -392,14 +510,14 @@ def main():
         h,a=f["home"],f["away"]
         played = PLAYED.get((h,a))
         host = (h in HOSTS) and (a not in HOSTS)
-        base,judg,src,note,mkt,ci,grid6 = predict_match(elo,dc,w,h,a, form_adjustments=form_adjustments)
+        base,judg,src,note,mkt,ci,grid6,advanced = predict_match(elo,dc,w,h,a, form_adjustments=form_adjustments)
         ana = analysis_zh(h,a,judg,ci,mkt,note,host)
         meta = match_metadata(h, a, played, UPDATE_STATUS, FRESH_RESULT_KEYS, HISTORICAL_RESULTS,
                               form_adjustments=form_adjustments)
         matches.append({**f, "src":src, "note":note,
                         "played": list(played) if played else None,
                         "model": pack(base), "judgment": pack(judg),
-                        "ci":ci, "market":mkt, "grid6":grid6, "analysis":ana,
+                        "ci":ci, "market":mkt, "grid6":grid6, "advanced":advanced, "analysis":ana,
                         "fresh": meta["fresh"], "played_source": meta["played_source"],
                         "public_signals": meta["public_signals"]})
 

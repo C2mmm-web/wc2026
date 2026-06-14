@@ -229,6 +229,34 @@ class FormAdjustmentFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(adj_away / base_away, 0.97, places=6)
 
 
+class AdvancedMarketFeatureTests(unittest.TestCase):
+    def test_advanced_markets_are_derived_from_goal_distribution(self):
+        from main import advanced_markets
+
+        markets = advanced_markets(1.6, 1.1, -0.05, "Home", "Away")
+
+        self.assertIn("totals", markets)
+        self.assertIn("handicap", markets)
+        self.assertIn("htft", markets)
+        self.assertAlmostEqual(
+            sum(item["prob"] for item in markets["totals"]["buckets"]),
+            1.0,
+            places=3,
+        )
+        self.assertAlmostEqual(
+            sum(item["prob"] for item in markets["handicap"]["outcomes"]),
+            1.0,
+            places=3,
+        )
+        self.assertAlmostEqual(
+            sum(sum(row["cells"][col]["prob"] for col in ("H", "D", "A")) for row in markets["htft"]["rows"]),
+            1.0,
+            places=3,
+        )
+        self.assertEqual(markets["totals"]["over_under"][0]["line"], 2.5)
+        self.assertIn(markets["handicap"]["home_hcap"], (-2, -1, 0, 1, 2))
+
+
 class MainPayloadFeatureTests(unittest.TestCase):
     def test_match_payload_exposes_update_and_public_signal_metadata(self):
         from main import match_metadata
