@@ -1,13 +1,13 @@
 # GitHub Actions workflow — auto-update the 2026 World Cup predictor in the cloud.
 # Put this file in your repo at:  .github/workflows/update.yml
-# It runs daily (and on a manual click), pulls results from API-Football,
+# It runs every 30 minutes (and on a manual click), pulls results from API-Football,
 # recomputes the model, and publishes the webpage to GitHub Pages.
 
 name: Update WC2026 predictions
 
 on:
   schedule:
-    - cron: "0 13 * * *"      # every day 13:00 UTC. Change the time here if you like (cron is in UTC).
+    - cron: "*/30 * * * *"    # every 30 minutes; GitHub cron is UTC and may run a few minutes late.
   workflow_dispatch: {}         # adds a "Run workflow" button for manual runs
 
 permissions:
