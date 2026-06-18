@@ -38,10 +38,11 @@ def _h2h(order, results):
 
 class Predictor:
     """Produces (lh,la) for any tie, blending Elo + Dixon-Coles with per-sim noise."""
-    def __init__(self, elo, dc, w, rating_sigma=28, param_sigma=0.05, form_adjustments=None):
+    def __init__(self, elo, dc, w, rating_sigma=28, param_sigma=0.05, form_adjustments=None, tempo_mult=1.0):
         self.elo0 = dict(elo.r); self.dc = dc; self.w = w
         self.rs = rating_sigma; self.ps = param_sigma
         self.form_adjustments = form_adjustments or {}
+        self.tempo_mult = float(tempo_mult)
         self.reset()
     def reset(self):
         # P5: draw a fresh parameter set each tournament (uncertainty propagation)
@@ -58,6 +59,8 @@ class Predictor:
         ld_a = _goal_exp(self.att[ia] - self.dff[ih])
         lh = self.w*ld_h + (1-self.w)*le_h
         la = self.w*ld_a + (1-self.w)*le_a
+        lh *= self.tempo_mult
+        la *= self.tempo_mult
         lh *= attack_mult(self.form_adjustments, h)
         la *= attack_mult(self.form_adjustments, a)
         return min(8.0, max(0.05, lh)), min(8.0, max(0.05, la))

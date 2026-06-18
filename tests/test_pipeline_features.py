@@ -462,6 +462,87 @@ class FormAdjustmentFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(adj_home / base_home, 1.03, places=6)
         self.assertAlmostEqual(adj_away / base_away, 0.97, places=6)
 
+    def test_group_context_adjustments_are_small_and_stage_aware(self):
+        from form import build_group_context_adjustments
+
+        adjustments = build_group_context_adjustments(
+            {"A": ["Mexico", "South Africa", "South Korea", "Czechia"]},
+            {
+                ("Mexico", "South Africa"): (5, 0),
+                ("South Korea", "Czechia"): (0, 0),
+            },
+        )
+
+        self.assertGreater(adjustments["Mexico"]["attack_mult"], 1.0)
+        self.assertLessEqual(adjustments["Mexico"]["attack_mult"], 1.018)
+        self.assertGreaterEqual(adjustments["South Africa"]["attack_mult"], 0.982)
+        self.assertIn("小组形势", adjustments["Mexico"]["note"])
+        self.assertIn("2 场", adjustments["Mexico"]["note"])
+
+    def test_combined_adjustments_stay_conservative_after_single_match(self):
+        from form import build_combined_adjustments
+
+        adjustments = build_combined_adjustments(
+            {"A": ["Mexico", "South Africa", "South Korea", "Czechia"]},
+            {
+                ("Mexico", "South Africa"): (6, 0),
+                ("South Africa", "Mexico"): (0, 6),
+            },
+        )
+
+        self.assertLessEqual(adjustments["Mexico"]["attack_mult"], 1.04)
+        self.assertGreaterEqual(adjustments["South Africa"]["attack_mult"], 0.96)
+        self.assertIn("综合微调", adjustments["Mexico"]["note"])
+
+
+class TempoAdjustmentFeatureTests(unittest.TestCase):
+    def test_tournament_tempo_uses_real_history_with_tight_bounds(self):
+        from tempo import build_tempo_adjustment
+
+        high_scoring_rows = [
+            {"home_goals": 3, "away_goals": 2, "source": "openfootball_worldcup"}
+            for _ in range(50)
+        ]
+
+        tempo = build_tempo_adjustment(high_scoring_rows, min_matches=20)
+
+        self.assertEqual(tempo["source"], "real_history")
+        self.assertGreater(tempo["goal_mult"], 1.0)
+        self.assertLessEqual(tempo["goal_mult"], 1.08)
+        self.assertIn("赛事节奏", tempo["note"])
+
+    def test_tournament_tempo_falls_back_without_real_history(self):
+        from tempo import build_tempo_adjustment
+
+        tempo = build_tempo_adjustment([], min_matches=20)
+
+        self.assertEqual(tempo["source"], "neutral")
+        self.assertEqual(tempo["goal_mult"], 1.0)
+
+    def test_predictor_applies_tempo_symmetrically(self):
+        import numpy as np
+        from tournament import Predictor
+        from data import TEAMS, ELO_PRIOR
+
+        class FakeElo:
+            r = dict(ELO_PRIOR)
+
+        class FakeDc:
+            teams = list(TEAMS)
+            idx = {team: i for i, team in enumerate(teams)}
+            att = np.zeros(len(teams))
+            dff = np.zeros(len(teams))
+            gamma = 0.0
+
+        plain = Predictor(FakeElo(), FakeDc(), w=0.0, rating_sigma=0, param_sigma=0)
+        tempo = Predictor(FakeElo(), FakeDc(), w=0.0, rating_sigma=0, param_sigma=0, tempo_mult=1.04)
+
+        base_home, base_away = plain.lambdas("France", "Senegal")
+        tempo_home, tempo_away = tempo.lambdas("France", "Senegal")
+
+        self.assertAlmostEqual(tempo_home / base_home, 1.04, places=6)
+        self.assertAlmostEqual(tempo_away / base_away, 1.04, places=6)
+
 
 class AdvancedMarketFeatureTests(unittest.TestCase):
     def _poisson_grid(self, lh, la, maxg=8):
