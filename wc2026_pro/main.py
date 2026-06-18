@@ -14,7 +14,7 @@ from backtest import run_backtest
 from tournament import Predictor, simulate
 from form import attack_mult, apply_played_elo_updates, build_combined_adjustments, defense_mult
 from calibration import apply_temperature
-from scorelines import calibrate_scoreline_grid, scoreline_summary, top_scorelines
+from scorelines import calibrate_scoreline_grid, exact_scoreline_grid, scoreline_summary, top_scorelines
 from audit import save_audit_artifacts
 from tempo import build_live_tempo_adjustment, build_tempo_adjustment
 
@@ -132,10 +132,14 @@ def _calibrate_summary_scorelines(summary, rho):
         summary["d"],
         summary["l"],
     )
+    exact_grid, exact_model = exact_scoreline_grid(raw_grid, calibrated_grid, raw_weight=0.65)
     out = dict(summary)
-    out["top"] = top_scorelines(calibrated_grid)
-    out["scoreline_model"] = scoreline_model
-    grid6 = [[round(float(calibrated_grid[i][j]), 4) for j in range(6)] for i in range(6)]
+    out["top"] = top_scorelines(exact_grid)
+    out["scoreline_model"] = {
+        **scoreline_model,
+        "exact_layer": exact_model,
+    }
+    grid6 = [[round(float(exact_grid[i][j]), 4) for j in range(6)] for i in range(6)]
     return out, grid6
 
 def _result_code(hg, ag):
@@ -452,7 +456,7 @@ function scorelineBlock(m){
  const title=single?'Primary Exact Score · 清晰单点':'Exact Score Distribution · 无单一精确比分优势';
  return `<div><div style="font-size:11px;color:var(--mut)">${title}</div>
   <div class="scorechips">${items.map((x,i)=>`<span class="scorechip"><b>${esc(x.score)}</b><span>${single&&i==0?'Primary':'Candidate'} · ${pct(x.prob)}%</span></span>`).join("")}</div>
-  <div class="scorehint">${single?'该比分通过单点置信门槛。':'Top 1 概率和领先差距不足，不把任何一个比分当主预测。'} tempo/overdispersion 校准后展示；胜平负总概率保持不变。</div></div>
+  <div class="scorehint">${single?'该比分通过单点置信门槛。':'Top 1 概率和领先差距不足，不把任何一个比分当主预测。'} 1X2 概率单独校准；精确比分使用进球分布形状层，避免被胜平负校准硬压回低比分。</div></div>
   <div class="cf">Scoreline<br>confidence<b>${single?'Single':'Distribution'}</b><span style="font-size:11px">${esc(sl.concentration_label||"分布")} · ${pct(sl.mode_prob||items[0].prob)}%</span></div>`;
 }
 function report(m){const r=m.judgment,ci=m.ci,p=m.played;
@@ -560,7 +564,7 @@ document.getElementById("modelcard").innerHTML=
  <table class="tbl" style="margin-top:10px"><thead><tr><th>模型（留出测试集）</th><th class="n">LogLoss</th><th class="n">Brier</th><th class="n">RPS↓</th></tr></thead><tbody>
  ${mrow("本模型（校准后）",T.model,1)}${T.raw_model?mrow("本模型（未校准）",T.raw_model):""}${mrow("仅 Elo",T.elo_only)}${mrow("仅 Dixon-Coles",T.dc_only)}${mrow("朴素基准",T.baseline)}${mrow("锐利盘口基准",T.sharp_market_proxy)}</tbody></table>
  <div style="margin-top:8px"><span class="metric">历史精确比分 Top1 <b>${auditPct(SL.exact_top1)}</b></span><span class="metric">历史精确比分 Top3 <b>${auditPct(SL.exact_top3)}</b></span><span class="metric">平均最高比分概率 <b>${auditPct(SL.avg_top1_prob)}</b></span><span class="metric">比分测试样本 <b>${SL.n||0}</b></span></div>
- <small>数值越低越好。Brier / LogLoss / RPS 衡量的是概率准不准，比“精确比分”更有价值；精确比分层使用 tempo/overdispersion 校准并保持胜平负总概率不变。</small>
+ <small>数值越低越好。Brier / LogLoss / RPS 衡量的是概率准不准，比“精确比分”更有价值；1X2 概率和精确比分候选分层校准，避免同一套约束同时牺牲两边。</small>
  <div class="note" style="margin-top:12px">数据说明：云端会优先用 API-Football + openfootball 历史赛果重新拟合；胜平负概率使用验证集 temperature scaling 做校准。${esc(liveElo.note||"")} ${esc(tempo.note)} 精确比分只应读作概率候选簇，不能当成高命中率单点承诺；正式命中率只统计赛前已归档样本，赛后重算不计入。</div>`;
 renderAudit();chips();list();</script></body></html>"""
 

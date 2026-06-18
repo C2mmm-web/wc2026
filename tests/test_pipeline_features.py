@@ -737,6 +737,19 @@ class AdvancedMarketFeatureTests(unittest.TestCase):
         for actual, expected in zip(totals, targets):
             self.assertAlmostEqual(actual, expected, places=7)
 
+    def test_exact_scoreline_grid_can_use_goal_shape_without_wdl_locking(self):
+        from scorelines import exact_scoreline_grid
+
+        raw = self._poisson_grid(1.9, 0.8)
+        calibrated = self._poisson_grid(1.2, 1.2)
+
+        exact, meta = exact_scoreline_grid(raw, calibrated, raw_weight=1.0)
+
+        self.assertAlmostEqual(sum(sum(row) for row in exact), 1.0, places=7)
+        self.assertAlmostEqual(exact[2][0], raw[2][0], places=7)
+        self.assertEqual(meta["model"], "goal_shape_exact_score")
+        self.assertEqual(meta["preserves"], "goal_distribution_shape")
+
     def test_scoreline_calibration_reduces_mechanical_one_nil_mode(self):
         from scorelines import calibrate_scoreline_grid, scoreline_summary, top_scorelines
 

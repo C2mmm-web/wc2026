@@ -92,6 +92,27 @@ def calibrate_scoreline_grid(grid, lh, la, home_win, draw, away_win):
     }
 
 
+def exact_scoreline_grid(raw_grid, calibrated_grid, raw_weight=1.0):
+    raw = _as_float_grid(raw_grid)
+    calibrated = _as_float_grid(calibrated_grid)
+    weight = _clamp(float(raw_weight), 0.0, 1.0)
+    out = []
+    for i, row in enumerate(raw):
+        out_row = []
+        for j, raw_value in enumerate(row):
+            calibrated_value = calibrated[i][j] if i < len(calibrated) and j < len(calibrated[i]) else 0.0
+            out_row.append(weight * raw_value + (1.0 - weight) * calibrated_value)
+        out.append(out_row)
+    total = sum(sum(row) for row in out)
+    if total:
+        out = [[value / total for value in row] for row in out]
+    return out, {
+        "model": "goal_shape_exact_score",
+        "raw_weight": round(weight, 3),
+        "preserves": "goal_distribution_shape" if weight >= 0.999 else "blended_goal_shape_and_1x2",
+    }
+
+
 def top_scorelines(grid, limit=4, max_goals=6):
     rows = []
     upper = min(max_goals, len(grid))
