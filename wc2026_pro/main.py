@@ -14,6 +14,7 @@ from backtest import run_backtest
 from tournament import Predictor, simulate
 from form import attack_mult, build_form_adjustments
 from calibration import apply_temperature
+from scorelines import scoreline_summary
 
 HERE = os.path.dirname(__file__)
 TEMPLATE_MD = {1: [(0,1),(2,3)], 2: [(0,2),(3,1)], 3: [(3,0),(1,2)]}
@@ -263,6 +264,10 @@ def analysis_zh(home, away, judg, ci, mkt, note, host):
     s += "预计" + ("场面开放、进球较多。" if tg>2.9 else "比赛偏闷、机会不多。" if tg<2.3 else "进球数中等。")
     s += f"下半场更可能出球（破门概率 {judg['h2g']*100:.0f}% vs 上半场 {judg['h1g']*100:.0f}%），"
     s += f"{fav}更可能在下半场拉开而非开局速胜。"
+    sl = scoreline_summary(judg["top"])
+    if sl["concentration"] == "low":
+        top3 = " / ".join(f"{item['score']} {item['prob']*100:.0f}%" for item in sl["top3"])
+        s += f"精确比分属于低集中度分布，Top 3（{top3}）比单一比分更有参考价值。"
     if host: s += f"{home}坐拥东道主之利。"
     if mkt:
         mfp = mkt[0] if fav==home else mkt[2]
@@ -324,6 +329,7 @@ small{color:var(--mut);font-size:12px;line-height:1.6;display:block}
 .fin{text-align:center;background:#0e1530;border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:16px;color:var(--acc2)}.fin b{font-size:26px;color:#fff;display:block}
 .call{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(120deg,#16223f,#11192f);border:1px solid #2b3a63;border-radius:14px;padding:16px 18px;margin-bottom:18px}
 .call .sc{font-size:30px;font-weight:800;letter-spacing:1px}.call .cf{font-size:12px;color:var(--mut);text-align:right}.call .cf b{display:block;font-size:15px;color:var(--gold)}
+.call.scorecall{align-items:flex-start;gap:14px}.scorechips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.scorechip{background:#0e1530;border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:82px}.scorechip b{display:block;color:#fff;font-size:18px;line-height:1}.scorechip span{display:block;color:var(--mut);font-size:11px;margin-top:4px;font-variant-numeric:tabular-nums}.scorehint{font-size:11px;color:var(--mut);margin-top:8px;line-height:1.45;max-width:320px}
 .seclab{font-size:11px;color:var(--acc);letter-spacing:1px;margin:18px 0 10px;font-weight:700}
 .wrow{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13px}
 .wname{width:96px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wtrack{flex:1;height:18px;background:#0e1530;border-radius:6px;position:relative;overflow:hidden}
@@ -410,6 +416,13 @@ function htft(m){const rows=m.advanced.htft.rows,cols=["H","D","A"];let mx=0;
  let h='<div class="htft"><span class="hd">HT \\ FT</span><span class="hd">H</span><span class="hd">D</span><span class="hd">A</span>';
  rows.forEach(r=>{h+=`<span class="hd">${r.ht}</span>`;cols.forEach(c=>{const v=r.cells[c].prob,a=Math.max(.08,Math.pow(v/mx,.7));h+=`<span class="${v==mx?'hot':''}" style="background:rgba(34,211,166,${a.toFixed(3)})" title="HT/FT ${r.ht}/${c}: ${pct(v)}%">${r.ht}/${c}<br>${pct(v)}%</span>`})});
  return h+'</div><div class="legend">H = 主胜，D = 平局，A = 客胜；金框为最高概率 HT/FT 组合。</div>';}
+function scorelineBlock(m){
+ const sl=m.scoreline||{},items=sl.top3||m.judgment.top.slice(0,3).map(x=>({score:`${x[0]}-${x[1]}`,prob:x[2]}));
+ return `<div><div style="font-size:11px;color:var(--mut)">Exact Score Top 3 · 比分候选</div>
+  <div class="scorechips">${items.map((x,i)=>`<span class="scorechip"><b>${esc(x.score)}</b><span>${i==0?'Mode':'Alt'} · ${pct(x.prob)}%</span></span>`).join("")}</div>
+  <div class="scorehint">单一精确比分概率通常很低；Top 3 和下方热力图比只看一个比分更可靠。</div></div>
+  <div class="cf">Scoreline<br>concentration<b>${esc(sl.concentration_label||"分布")}</b><span style="font-size:11px">Mode ${pct(sl.mode_prob||items[0].prob)}%</span></div>`;
+}
 function report(m){const r=m.judgment,ci=m.ci,p=m.played;
  const fav=r.w>=r.l?m.home:m.away, fp=Math.max(r.w,r.l);
  const conf=fp>0.58&&(ci.w[1]-ci.w[0]<0.2||ci.l[1]-ci.l[0]<0.2)?"把握较高":fp>0.45?"把握中等":"胜负难料";
@@ -423,9 +436,7 @@ function report(m){const r=m.judgment,ci=m.ci,p=m.played;
   <div class="rh">${m.home} <span style="color:var(--mut);font-weight:400">vs</span> ${m.away}</div>
   <div class="rs">${m.group} 组 · 第 ${m.md} 轮 · ${m.src=='market'?'已用实时盘口校准':'Elo + Dixon-Coles 模型'}</div>
   ${res}
-  <div class="call"><div><div style="font-size:11px;color:var(--mut)">最可能比分</div>
-   <div class="sc">${m.home} ${r.top[0][0]}–${r.top[0][1]} ${m.away}</div></div>
-   <div class="cf">置信<b>${conf}</b><span style="font-size:11px">${fav} 胜 ${pct(fp)}%</span></div></div>
+  <div class="call scorecall">${scorelineBlock(m)}</div>
 
   <div class="seclab">胜平负 · 含 90% 置信区间</div>
   ${wrow(m.home+" 胜",r.w,ci.w,"var(--acc2)")}
@@ -532,6 +543,7 @@ def main():
         matches.append({**f, "src":src, "note":note,
                         "played": list(played) if played else None,
                         "model": pack(base), "judgment": pack(judg),
+                        "scoreline": scoreline_summary(judg["top"]),
                         "ci":ci, "market":mkt, "grid6":grid6, "advanced":advanced, "analysis":ana,
                         "fresh": meta["fresh"], "played_source": meta["played_source"],
                         "public_signals": meta["public_signals"]})
@@ -546,7 +558,7 @@ def main():
     ratings={t:ELO_PRIOR[t] for t in TEAMS}   # display real anchored Elo, not synthetic-fit
     payload={"version":MODEL_VERSION,
              "generated":datetime.date.today().isoformat(),
-             "generated_at":datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+             "generated_at":datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
              "update_status":UPDATE_STATUS,
              "form_adjustments":form_adjustments,
              "ensemble_weight_dc":round(w,3),

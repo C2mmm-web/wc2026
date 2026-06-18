@@ -352,6 +352,22 @@ class AdvancedMarketFeatureTests(unittest.TestCase):
         self.assertEqual(markets["totals"]["over_under"][0]["line"], 2.5)
         self.assertIn(markets["handicap"]["home_hcap"], (-2, -1, 0, 1, 2))
 
+    def test_scoreline_summary_marks_close_modes_as_low_concentration(self):
+        from scorelines import scoreline_summary
+
+        summary = scoreline_summary([
+            ((1, 0), 0.1267),
+            ((1, 1), 0.1112),
+            ((2, 1), 0.0950),
+            ((2, 0), 0.0949),
+        ])
+
+        self.assertEqual(summary["top3"][0]["score"], "1-0")
+        self.assertEqual([item["score"] for item in summary["top3"]], ["1-0", "1-1", "2-1"])
+        self.assertEqual(summary["concentration"], "low")
+        self.assertEqual(summary["concentration_label"], "低集中度")
+        self.assertLess(summary["mode_gap"], 0.025)
+
 
 class MainPayloadFeatureTests(unittest.TestCase):
     def test_match_payload_exposes_update_and_public_signal_metadata(self):
