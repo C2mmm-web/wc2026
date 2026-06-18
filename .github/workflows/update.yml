@@ -43,6 +43,8 @@ jobs:
           mkdir -p _site
           cp wc2026_predictor.html _site/index.html
           cp wc2026_pro/predictions.json _site/predictions.json
+          cp wc2026_pro/prediction_archive.json _site/prediction_archive.json
+          cp wc2026_pro/audit_report.json _site/audit_report.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

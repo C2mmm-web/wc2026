@@ -222,6 +222,143 @@ class FetchResultsFeatureTests(unittest.TestCase):
         self.assertTrue(out["status"]["checked_at"].endswith("Z"))
 
 
+class PredictionAuditFeatureTests(unittest.TestCase):
+    def test_archive_snapshots_unplayed_matches_once(self):
+        from audit import append_prediction_archive
+
+        payload = {
+            "version": "unit-v1",
+            "generated": "2026-06-18",
+            "generated_at": "2026-06-18T00:00:00Z",
+            "matches": [
+                {
+                    "group": "A",
+                    "md": 2,
+                    "home": "Mexico",
+                    "away": "Canada",
+                    "played": None,
+                    "judgment": {
+                        "w": 0.52,
+                        "d": 0.25,
+                        "l": 0.23,
+                        "lh": 1.45,
+                        "la": 1.05,
+                        "top": [[2, 1, 0.112], [1, 1, 0.105], [1, 0, 0.097]],
+                    },
+                    "scoreline": {
+                        "top3": [
+                            {"score": "2-1", "prob": 0.112},
+                            {"score": "1-1", "prob": 0.105},
+                            {"score": "1-0", "prob": 0.097},
+                        ]
+                    },
+                    "advanced": {"totals": {"xg_total": 2.5}},
+                },
+                {
+                    "group": "B",
+                    "md": 2,
+                    "home": "United States",
+                    "away": "Brazil",
+                    "played": [1, 3],
+                    "judgment": {
+                        "w": 0.21,
+                        "d": 0.23,
+                        "l": 0.56,
+                        "lh": 0.9,
+                        "la": 1.8,
+                        "top": [[1, 2, 0.12]],
+                    },
+                },
+                {
+                    "group": "C",
+                    "md": 3,
+                    "home": "France",
+                    "away": "Japan",
+                    "played": None,
+                    "judgment": {
+                        "w": 0.6,
+                        "d": 0.22,
+                        "l": 0.18,
+                        "lh": 1.8,
+                        "la": 0.8,
+                        "top": [[2, 0, 0.13]],
+                    },
+                },
+            ],
+        }
+        archive = append_prediction_archive([], payload, commit_sha="abc123")
+        archive = append_prediction_archive(archive, payload, commit_sha="abc123")
+
+        mexico_records = [r for r in archive if r["home"] == "Mexico" and r["away"] == "Canada"]
+        self.assertEqual(len(mexico_records), 1)
+        self.assertFalse(any(r["home"] == "United States" for r in archive))
+        self.assertFalse(any(r["home"] == "France" for r in archive))
+        record = mexico_records[0]
+        self.assertEqual(record["pred_score"], "2-1")
+        self.assertEqual(record["top3"][0], {"score": "2-1", "prob": 0.112})
+        self.assertEqual(record["xg_home"], 1.45)
+        self.assertEqual(record["xg_away"], 1.05)
+        self.assertEqual(record["xg_total"], 2.5)
+        self.assertEqual(record["commit"], "abc123")
+
+    def test_audit_report_uses_earliest_archived_prediction(self):
+        from audit import build_audit_report
+
+        archive = [
+            {
+                "generated_at": "2026-06-15T00:00:00Z",
+                "home": "Mexico",
+                "away": "Canada",
+                "p_home": 0.5,
+                "p_draw": 0.25,
+                "p_away": 0.25,
+                "pred_score": "1-0",
+                "top3": [
+                    {"score": "1-0", "prob": 0.12},
+                    {"score": "1-1", "prob": 0.11},
+                    {"score": "2-1", "prob": 0.09},
+                ],
+            },
+            {
+                "generated_at": "2026-06-17T00:00:00Z",
+                "home": "Mexico",
+                "away": "Canada",
+                "p_home": 0.33,
+                "p_draw": 0.41,
+                "p_away": 0.26,
+                "pred_score": "1-1",
+                "top3": [{"score": "1-1", "prob": 0.2}],
+            },
+        ]
+        payload = {
+            "generated_at": "2026-06-18T00:00:00Z",
+            "matches": [
+                {"home": "Mexico", "away": "Canada", "played": [1, 1]},
+                {"home": "United States", "away": "Brazil", "played": [0, 2]},
+                {"home": "France", "away": "Japan", "played": None},
+            ],
+        }
+
+        report = build_audit_report(archive, payload)
+
+        self.assertEqual(report["finished_matches"], 2)
+        self.assertEqual(report["audited_matches"], 1)
+        self.assertEqual(report["missing_prematch"], 1)
+        self.assertEqual(report["exact_top1_hits"], 0)
+        self.assertEqual(report["exact_top3_hits"], 1)
+        self.assertEqual(report["wdl_hits"], 0)
+        self.assertEqual(report["rates"]["exact_top1"], 0.0)
+        self.assertEqual(report["rates"]["exact_top3"], 1.0)
+        self.assertEqual(report["rates"]["wdl"], 0.0)
+        row = report["rows"][0]
+        self.assertEqual(row["prediction_generated_at"], "2026-06-15T00:00:00Z")
+        self.assertEqual(row["pred_score"], "1-0")
+        self.assertEqual(row["actual_score"], "1-1")
+        self.assertFalse(row["exact_top1"])
+        self.assertTrue(row["exact_top3"])
+        self.assertEqual(report["missing"][0]["home"], "United States")
+
+
 class BacktestFeatureTests(unittest.TestCase):
     def test_run_backtest_uses_real_history_when_available(self):
         from backtest import run_backtest

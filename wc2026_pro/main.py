@@ -1,7 +1,7 @@
 """
 wc2026_pro.main — P8 orchestration & single source of truth.
 Runs the whole pipeline, emits predictions.json / ratings.json / backtest_report.json /
-prediction_log.csv, and rebuilds the webpage embedding the generated predictions.
+prediction_log.csv / prediction_archive.json, and rebuilds the webpage embedding the generated predictions.
 """
 import json, os, math, csv, datetime
 import numpy as np
@@ -15,6 +15,7 @@ from tournament import Predictor, simulate
 from form import attack_mult, build_form_adjustments
 from calibration import apply_temperature
 from scorelines import calibrate_scoreline_grid, scoreline_summary, top_scorelines
+from audit import save_audit_artifacts
 
 HERE = os.path.dirname(__file__)
 TEMPLATE_MD = {1: [(0,1),(2,3)], 2: [(0,2),(3,1)], 3: [(3,0),(1,2)]}
@@ -336,6 +337,10 @@ summary::before{content:"▸ ";color:var(--mut)}details[open] summary::before{co
 .tbar{height:8px;background:#0e1530;border-radius:5px;overflow:hidden;width:90px;display:inline-block;vertical-align:middle}.tbar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2))}
 small{color:var(--mut);font-size:12px;line-height:1.6;display:block}
 .metric{display:inline-block;background:#0e1530;border:1px solid var(--line);border-radius:9px;padding:7px 11px;margin:3px 6px 3px 0;font-size:12px}.metric b{color:var(--acc2)}
+.auditnote{background:#101a31;border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin:6px 0 12px;font-size:12px;line-height:1.65;color:#cbd6ef}
+.auditpill{display:inline-block;border-radius:999px;padding:2px 7px;font-size:11px;border:1px solid var(--line);white-space:nowrap}.auditpill.ok{background:#12362d;color:var(--acc2);border-color:#236b5b}.auditpill.bad{background:#351a24;color:var(--red);border-color:#67404a}.auditpill.wait{background:#241f33;color:var(--pur);border-color:#463c63}
+.auditmut{color:var(--mut);font-size:11px;line-height:1.5}.nowrap{white-space:nowrap}
+@media(max-width:520px){.mrow{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center}.mteams{grid-column:2/-1;min-width:0;overflow-wrap:anywhere}.headline{grid-column:1/3;min-width:0;text-align:left}.mscore{grid-column:1/2}.pill{justify-self:end}}
 /* modal report */
 .ov{position:fixed;inset:0;background:rgba(5,9,20,.82);backdrop-filter:blur(4px);display:none;align-items:flex-start;justify-content:center;padding:24px 12px;overflow:auto;z-index:50}.ov.show{display:flex}
 .rep{background:#121a30;border:1px solid var(--line);border-radius:18px;max-width:560px;width:100%;padding:24px;position:relative}
@@ -374,6 +379,7 @@ small{color:var(--mut);font-size:12px;line-height:1.6;display:block}
 <div class="list" id="list"></div>
 
 <details id="titlebox"><summary>🏆 夺冠概率（前 16）</summary><div id="title"></div></details>
+<details id="auditbox"><summary>📊 自查与命中率</summary><div id="audit"></div></details>
 <details id="cardbox"><summary>🧪 模型说明与回测验证</summary><div id="modelcard"></div></details>
 
 </div><div class="ov" id="ov"><div class="rep" id="rep"></div></div>
@@ -502,6 +508,35 @@ document.getElementById("ov").onclick=e=>{if(e.target.id=="ov")cl();};document.a
 let th=`<table class="tbl"><thead><tr><th>#</th><th>球队</th><th class="n">综合</th><th></th><th class="n">纯模型</th><th class="n">进32强</th><th class="n">进决赛</th></tr></thead><tbody>`;
 PRED.title.slice(0,16).forEach((r,i)=>{th+=`<tr><td class="mut">${i+1}</td><td>${r.team}</td><td class="n best">${r.blended}%</td><td><span class="tbar"><i style="width:${Math.min(100,r.blended*4)}%"></i></span></td><td class="n mut">${r.model}%</td><td class="n">${r.advance}%</td><td class="n">${r.finalist}%</td></tr>`});
 document.getElementById("title").innerHTML=th+'</tbody></table><small>“综合” = 模型 + 博彩夺冠盘口；“纯模型” = 引擎蒙特卡洛（含参数不确定性）。</small>';
+function auditPct(x){return x==null?"--":pct(x)+"%";}
+function auditPill(ok,label){return `<span class="auditpill ${ok?'ok':'bad'}">${label}</span>`;}
+function renderAudit(){const A=PRED.audit||{},rates=A.rates||{},rows=A.rows||[],missing=A.missing||[];
+ const box=document.getElementById("audit");if(!box)return;
+ const note=A.audited_matches?`只统计有赛前留档的比赛；赛后重算不会计入。`:`归档从本版本开始建立；之前已经完赛但没有赛前快照的比赛会列为 Missing，不拿来美化命中率。`;
+ let h=`<div>
+  <span class="metric">已完赛 <b>${A.finished_matches||0}</b></span>
+  <span class="metric">可审计样本 <b>${A.audited_matches||0}</b></span>
+  <span class="metric">精确比分 Top1 <b>${auditPct(rates.exact_top1)}</b></span>
+  <span class="metric">精确比分 Top3 <b>${auditPct(rates.exact_top3)}</b></span>
+  <span class="metric">1X2 胜平负 <b>${auditPct(rates.wdl)}</b></span>
+  <span class="metric">Missing 赛前留档 <b>${A.missing_prematch||0}</b></span>
+  <span class="metric">Archive rows <b>${A.archive_records||0}</b></span>
+ </div><div class="auditnote">${note}</div>`;
+ if(rows.length){
+  h+=`<table class="tbl"><thead><tr><th>比赛</th><th>赛前预测</th><th>实际</th><th class="nowrap">Top1</th><th class="nowrap">Top3</th><th class="nowrap">1X2</th></tr></thead><tbody>`;
+  rows.slice(-18).reverse().forEach(r=>{const top=(r.top3||[]).map(x=>`${esc(x.score)} ${pct(x.prob)}%`).join(" / ");
+   h+=`<tr><td>${esc(r.home)} <span class="auditmut">vs</span> ${esc(r.away)}<br><span class="auditmut">${esc(r.prediction_generated_at||"")}</span></td>
+    <td><b>${esc(r.pred_score||"--")}</b><br><span class="auditmut">${top}</span></td><td class="best">${esc(r.actual_score)}</td>
+    <td>${auditPill(r.exact_top1,r.exact_top1?"命中":"未中")}</td><td>${auditPill(r.exact_top3,r.exact_top3?"命中":"未中")}</td><td>${auditPill(r.wdl_hit,r.wdl_hit?"命中":"未中")}</td></tr>`});
+  h+=`</tbody></table>`;
+ }else{
+  h+=`<div class="auditnote">还没有可审计样本。下一场有赛前快照的比赛完赛后，这里会自动显示 Top1 / Top3 / 1X2 命中率。</div>`;
+ }
+ if(missing.length){
+  h+=`<small>Missing 示例：${missing.slice(0,8).map(m=>`${esc(m.home)} ${esc(m.actual_score)} ${esc(m.away)}`).join(" · ")}${missing.length>8?" · ...":""}</small>`;
+ }
+ box.innerHTML=h;
+}
 const bt=PRED.backtest,T=bt.test;
 const mrow=(l,o,b)=>`<tr><td>${l}</td><td class="n ${b?'best':''}">${o.logloss}</td><td class="n ${b?'best':''}">${o.brier}</td><td class="n ${b?'best':''}">${o.rps}</td></tr>`;
 const source=bt.data_source=="real_worldcup_history"||bt.data_source=="api_football_history"?"真实世界杯历史赛果":"拟真回退样本";
@@ -512,7 +547,7 @@ document.getElementById("modelcard").innerHTML=
  ${mrow("本模型（校准后）",T.model,1)}${T.raw_model?mrow("本模型（未校准）",T.raw_model):""}${mrow("仅 Elo",T.elo_only)}${mrow("仅 Dixon-Coles",T.dc_only)}${mrow("朴素基准",T.baseline)}${mrow("锐利盘口基准",T.sharp_market_proxy)}</tbody></table>
  <small>数值越低越好。Brier / LogLoss / RPS 衡量的是概率准不准，比“精确比分”更有价值；精确比分层使用 tempo/overdispersion 校准并保持胜平负总概率不变。</small>
  <div class="note" style="margin-top:12px">数据说明：云端会优先用 API-Football + openfootball 历史赛果重新拟合；胜平负概率使用验证集 temperature scaling 做校准。若历史样本不足，页面会明确显示为“拟真回退样本”，不会假装成真实历史。</div>`;
-chips();list();</script></body></html>"""
+renderAudit();chips();list();</script></body></html>"""
 
 def build_site(payload):
     html = SITE_TEMPLATE.replace("/*DATA*/", json.dumps(payload, ensure_ascii=False))
@@ -581,6 +616,12 @@ def main():
              "backtest":report,"ratings":ratings,
              "matches":matches,"title":title}
 
+    archive, audit_report = save_audit_artifacts(
+        payload,
+        here=HERE,
+        commit_sha=os.environ.get("GITHUB_SHA"),
+    )
+
     json.dump(payload, open(os.path.join(HERE,"predictions.json"),"w"),
               ensure_ascii=False, indent=1)
     json.dump(report, open(os.path.join(HERE,"backtest_report.json"),"w"),
@@ -611,7 +652,8 @@ def main():
     for r in title[:12]:
         print(f"  {r['team']:<16} model {r['model']:>5.1f}%  blended {r['blended']:>5.1f}%  "
               f"R32 {r['advance']:>5.1f}%  final {r['finalist']:>4.1f}%")
-    print(f"\nWrote predictions.json, ratings.json, backtest_report.json, prediction_log.csv")
+    print(f"\nAudit archive rows={len(archive)} audited={audit_report['audited_matches']} missing={audit_report['missing_prematch']}")
+    print(f"\nWrote predictions.json, ratings.json, backtest_report.json, prediction_log.csv, prediction_archive.json, audit_report.json")
     return payload
 
 if __name__ == "__main__":

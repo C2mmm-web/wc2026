@@ -10,6 +10,8 @@ predictions.json
 ratings.json
 backtest_report.json
 prediction_log.csv
+prediction_archive.json
+audit_report.json
 DEPLOY_GITHUB.md
 __pycache__/
 *.pyc
