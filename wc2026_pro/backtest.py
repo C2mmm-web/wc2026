@@ -7,8 +7,9 @@ falls back to a realistic synthetic history so the page still builds.
 """
 import numpy as np
 from data import TEAMS, ELO_PRIOR
-from engine import EloModel, DixonColes, elo_lambdas, _pois
+from engine import EloModel, DixonColes, elo_lambdas, _pois, grid as score_grid
 from calibration import apply_temperature, fit_temperature
+from scorelines import top_scorelines
 
 rng = np.random.default_rng(2026)
 
@@ -126,6 +127,29 @@ def run_backtest(history_rows=None, min_real_history_matches=80):
         n = len(matches)
         return LL/n, BR/n, RP/n
 
+    def eval_scorelines(e, d, matches, w):
+        exact_top1 = exact_top3 = 0
+        top1_prob = 0.0
+        for match in matches:
+            h, a, hg, ag, neu, _date = match
+            le_h, le_a = elo_lambdas(e.r, h, a, neutral=neu)
+            ld_h, ld_a = d.lambdas(h, a, neutral=neu)
+            lh = float(np.clip(w * ld_h + (1 - w) * le_h, 0.05, 8.0))
+            la = float(np.clip(w * ld_a + (1 - w) * le_a, 0.05, 8.0))
+            top = top_scorelines(score_grid(lh, la, d.rho, 8), limit=3, max_goals=8)
+            scores = [score for score, _prob in top]
+            actual = (int(hg), int(ag))
+            exact_top1 += int(bool(scores) and scores[0] == actual)
+            exact_top3 += int(actual in scores)
+            top1_prob += float(top[0][1]) if top else 0.0
+        n = len(matches)
+        return {
+            "n": n,
+            "exact_top1": round(exact_top1 / n, 3) if n else None,
+            "exact_top3": round(exact_top3 / n, 3) if n else None,
+            "avg_top1_prob": round(top1_prob / n, 3) if n else None,
+        }
+
     # 1) select ensemble weight on VAL using models fit on TRAIN ONLY (no leakage)
     e_sel, d_sel = fit_models(train)
     ws = np.linspace(0, 1, 21)
@@ -145,6 +169,7 @@ def run_backtest(history_rows=None, min_real_history_matches=80):
     ll_m, br_m, rp_m = eval_w(elo, dc, test, w_star, temperature=wdl_temperature)
     ll_e, br_e, rp_e = eval_w(elo, dc, test, 0.0)     # Elo-only
     ll_d, br_d, rp_d = eval_w(elo, dc, test, 1.0)     # DC-only
+    scoreline_metrics = eval_scorelines(elo, dc, test, w_star)
     LLb = BRb = RPb = 0.0
     LLk = BRk = RPk = 0.0                      # market proxy
     att, dff, gamma, rho = true_params()
@@ -182,6 +207,7 @@ def run_backtest(history_rows=None, min_real_history_matches=80):
             "dc_only":    dict(logloss=round(ll_d,4), brier=round(br_d,4), rps=round(rp_d,4)),
             "baseline":   dict(logloss=round(LLb/n,4), brier=round(BRb/n,4), rps=round(RPb/n,4)),
             "sharp_market_proxy": dict(logloss=round(LLk/n,4), brier=round(BRk/n,4), rps=round(RPk/n,4)),
+            "scoreline": scoreline_metrics,
         },
         "calibration": {
             "method": "wdl_temperature_scaling",

@@ -391,6 +391,14 @@ class BacktestFeatureTests(unittest.TestCase):
         self.assertIn("model", report["test"])
         self.assertIn("calibration", report)
         self.assertIn("wdl_temperature", report["calibration"])
+        self.assertIn("scoreline", report["test"])
+        self.assertEqual(report["test"]["scoreline"]["n"], report["n_test"])
+        self.assertGreaterEqual(report["test"]["scoreline"]["exact_top1"], 0.0)
+        self.assertLessEqual(report["test"]["scoreline"]["exact_top1"], 1.0)
+        self.assertGreaterEqual(
+            report["test"]["scoreline"]["exact_top3"],
+            report["test"]["scoreline"]["exact_top1"],
+        )
         self.assertGreaterEqual(weight, 0.0)
         self.assertLessEqual(weight, 1.0)
 
