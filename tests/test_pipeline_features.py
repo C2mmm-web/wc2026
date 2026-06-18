@@ -54,6 +54,49 @@ class FetchResultsFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(sum(row["probs"]), 1.0, places=3)
         self.assertGreater(row["probs"][0], row["probs"][2])
 
+    def test_api_football_odds_payload_becomes_market_probabilities(self):
+        from market import parse_api_football_odds_payload
+
+        payload = {
+            "response": [
+                {
+                    "fixture": {"id": 42, "date": "2026-06-14T18:00:00+00:00"},
+                    "update": "2026-06-14T12:00:00+00:00",
+                    "bookmakers": [
+                        {
+                            "name": "ExampleBook",
+                            "bets": [
+                                {
+                                    "id": 1,
+                                    "name": "Match Winner",
+                                    "values": [
+                                        {"value": "Home", "odd": "1.80"},
+                                        {"value": "Draw", "odd": "3.50"},
+                                        {"value": "Away", "odd": "5.00"},
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        out = parse_api_football_odds_payload(
+            payload,
+            ["Brazil", "Morocco"],
+            fixture_lookup={"42": {"home": "Brazil", "away": "Morocco"}},
+            checked_at="2026-06-14T12:00:00Z",
+        )
+
+        self.assertEqual(out["status"], "success")
+        self.assertIn("Brazil|Morocco", out["matches"])
+        row = out["matches"]["Brazil|Morocco"]
+        self.assertEqual(row["source"], "api-football-odds")
+        self.assertEqual(row["bookmakers"], 1)
+        self.assertAlmostEqual(sum(row["probs"]), 1.0, places=3)
+        self.assertGreater(row["probs"][0], row["probs"][2])
+
     def test_openfootball_history_payload_becomes_training_rows(self):
         from fetch_results import openfootball_history_from_payload
 

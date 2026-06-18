@@ -28,7 +28,7 @@ from config import (
     HISTORY_SEASONS,
 )
 from data import TEAMS
-from market import fetch_the_odds_api
+from market import fetch_api_football_odds, fetch_the_odds_api
 
 HERE = os.path.dirname(__file__)
 OPENFOOTBALL_CURRENT_URL = (
@@ -409,11 +409,29 @@ def preserve_previous_sidecars(outputs, here=HERE):
             history_status["matches"] = len(previous_history)
     return outputs
 
-def fetch_market_odds_safe():
+def _fixture_lookup_from_api_payload(payload):
+    lookup = {}
+    for fx in (payload or {}).get("response", []):
+        fixture = fx.get("fixture") or {}
+        fixture_id = fixture.get("id")
+        if fixture_id is None:
+            continue
+        home, away, _unknown = _match_from_fixture(fx)
+        if home and away:
+            lookup[str(fixture_id)] = {
+                "home": home,
+                "away": away,
+                "date": fixture.get("date"),
+                "status": ((fixture.get("status") or {}).get("short")),
+            }
+    return lookup
+
+def fetch_market_odds_safe(fixture_payload=None):
+    primary = None
     try:
-        return fetch_the_odds_api(ODDS_API_KEY, TEAMS, sport_key=ODDS_API_SPORT_KEY)
+        primary = fetch_the_odds_api(ODDS_API_KEY, TEAMS, sport_key=ODDS_API_SPORT_KEY)
     except Exception as e:
-        return {
+        primary = {
             "status": "error",
             "source": "the-odds-api",
             "sport_key": ODDS_API_SPORT_KEY,
@@ -421,10 +439,45 @@ def fetch_market_odds_safe():
             "unknown_names": [],
             "error": str(e)[:180],
         }
+    if primary.get("status") == "success" and primary.get("matches"):
+        return primary
+
+    if API_FOOTBALL_KEY:
+        try:
+            fallback = fetch_api_football_odds(
+                API_FOOTBALL_KEY,
+                TEAMS,
+                fixture_lookup=_fixture_lookup_from_api_payload(fixture_payload),
+                host=API_FOOTBALL_HOST,
+                league=WC_LEAGUE_ID,
+                season=WC_SEASON,
+            )
+        except Exception as e:
+            fallback = {
+                "status": "error",
+                "source": "api-football-odds",
+                "matches": {},
+                "unknown_names": [],
+                "error": str(e)[:180],
+            }
+        if fallback.get("status") == "success" and fallback.get("matches"):
+            fallback["fallback_from"] = {
+                "source": primary.get("source"),
+                "status": primary.get("status"),
+                "error": primary.get("error"),
+            }
+            return fallback
+        primary["fallback_attempt"] = {
+            "source": fallback.get("source"),
+            "status": fallback.get("status"),
+            "matches": len(fallback.get("matches", {})),
+            "error": fallback.get("error"),
+            "unknown_names": fallback.get("unknown_names", []),
+        }
+    return primary
 
 def main():
     previous, previous_status = previous_results_from_pages()
-    market_odds = fetch_market_odds_safe()
     try:
         fallback_current = fetch_openfootball_current()
     except Exception as e:
@@ -462,6 +515,7 @@ def main():
             outputs["status"]["current_results"]["status"] = "no_key"
         if not outputs["historical_results"]:
             outputs["status"]["history"]["status"] = "no_key"
+        market_odds = fetch_market_odds_safe()
         write_outputs(preserve_previous_sidecars(outputs), market_odds=market_odds)
         print("[fetch_results] no API key set — wrote keyless current results from fallback source")
         print(f"[fetch_results] market odds status={market_odds.get('status')} matches={len(market_odds.get('matches', {}))}")
@@ -473,6 +527,7 @@ def main():
         data = {"errors": {"request": str(e)}, "response": []}
     if data.get("errors"):
         print("[fetch_results] API error:", data["errors"])
+    market_odds = fetch_market_odds_safe(data)
 
     history_payloads = []
     for season in HISTORY_SEASONS:

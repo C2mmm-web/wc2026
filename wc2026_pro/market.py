@@ -3,11 +3,13 @@ import json
 import math
 import os
 import urllib.request
+import urllib.parse
 import unicodedata
 
 
 ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/{sport}/odds/"
 DEFAULT_ODDS_SPORT_KEY = "soccer_fifa_world_cup"
+API_FOOTBALL_ODDS_URL = "https://{host}/odds"
 
 
 def _norm(value):
@@ -49,6 +51,13 @@ def _resolver(teams):
 def _american_to_prob(odds):
     odds = float(odds)
     return 100 / (odds + 100) if odds > 0 else (-odds) / (-odds + 100)
+
+
+def _decimal_to_prob(odds):
+    odds = float(odds)
+    if odds <= 1:
+        raise ValueError("decimal odds must be greater than 1")
+    return 1 / odds
 
 
 def _devig(probs):
@@ -151,6 +160,144 @@ def fetch_the_odds_api(api_key, teams, sport_key=None, regions="us,eu,uk", marke
     out = parse_the_odds_payload(payload, teams, checked_at=checked_at)
     out["sport_key"] = sport_key
     out["url"] = ODDS_API_URL.format(sport=sport_key)
+    return out
+
+
+def _fixture_teams_from_api_football_item(item, teams, fixture_lookup=None):
+    resolve = _resolver(teams)
+    fixture = item.get("fixture") or {}
+    fixture_id = str(fixture.get("id") or fixture.get("fixture_id") or item.get("fixture_id") or "")
+    if fixture_lookup and fixture_id and fixture_id in fixture_lookup:
+        row = fixture_lookup[fixture_id]
+        return row.get("home"), row.get("away")
+
+    team_data = item.get("teams") or {}
+    home_raw = ((team_data.get("home") or {}).get("name")
+                or item.get("home")
+                or item.get("home_team"))
+    away_raw = ((team_data.get("away") or {}).get("name")
+                or item.get("away")
+                or item.get("away_team"))
+    return resolve(home_raw) if home_raw else None, resolve(away_raw) if away_raw else None
+
+
+def _api_football_value_side(value):
+    raw = str(value or "").strip().lower()
+    if raw in ("home", "1", "team 1", "localteam"):
+        return "H"
+    if raw in ("draw", "x", "tie"):
+        return "D"
+    if raw in ("away", "2", "team 2", "visitorteam"):
+        return "A"
+    return None
+
+
+def parse_api_football_odds_payload(payload, teams, fixture_lookup=None, checked_at=None):
+    checked_at = checked_at or datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0
+    ).isoformat().replace("+00:00", "Z")
+    matches = {}
+    unknown = set()
+    response = payload.get("response", []) if isinstance(payload, dict) else payload or []
+    for item in response:
+        home, away = _fixture_teams_from_api_football_item(item, teams, fixture_lookup)
+        if not home:
+            unknown.add(((item.get("teams") or {}).get("home") or {}).get("name") or item.get("home"))
+        if not away:
+            unknown.add(((item.get("teams") or {}).get("away") or {}).get("name") or item.get("away"))
+        if not home or not away:
+            continue
+
+        vectors = []
+        bookmaker_names = []
+        for bookmaker in item.get("bookmakers", []):
+            bets = bookmaker.get("bets", [])
+            match_winner = next(
+                (
+                    bet for bet in bets
+                    if bet.get("id") == 1
+                    or str(bet.get("name", "")).strip().lower()
+                    in ("match winner", "winner", "1x2", "fulltime result", "full time result")
+                ),
+                None,
+            )
+            if not match_winner:
+                continue
+
+            prices = {}
+            for outcome in match_winner.get("values", []):
+                side = _api_football_value_side(outcome.get("value"))
+                if side:
+                    prices[side] = outcome.get("odd")
+            if all(key in prices for key in ("H", "D", "A")):
+                try:
+                    vectors.append(_devig([
+                        _decimal_to_prob(prices["H"]),
+                        _decimal_to_prob(prices["D"]),
+                        _decimal_to_prob(prices["A"]),
+                    ]))
+                except (TypeError, ValueError):
+                    continue
+                bookmaker_names.append(bookmaker.get("name") or str(bookmaker.get("id")) or "bookmaker")
+
+        avg = _avg_prob_vectors(vectors)
+        if avg:
+            fixture = item.get("fixture") or {}
+            matches[f"{home}|{away}"] = {
+                "home": home,
+                "away": away,
+                "probs": _round_probs(avg),
+                "bookmakers": len(vectors),
+                "bookmaker_names": bookmaker_names[:8],
+                "commence_time": fixture.get("date"),
+                "last_update": item.get("update"),
+                "source": "api-football-odds",
+            }
+
+    return {
+        "status": "success" if matches else "empty",
+        "source": "api-football-odds",
+        "checked_at": checked_at,
+        "matches": matches,
+        "unknown_names": sorted(name for name in unknown if name),
+    }
+
+
+def fetch_api_football_odds(api_key, teams, fixture_lookup=None, host="v3.football.api-sports.io", league=1, season=2026):
+    checked_at = datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0
+    ).isoformat().replace("+00:00", "Z")
+    if not api_key:
+        return {
+            "status": "no_key",
+            "source": "api-football-odds",
+            "checked_at": checked_at,
+            "matches": {},
+            "unknown_names": [],
+        }
+    query = urllib.parse.urlencode({"league": league, "season": season})
+    url = f"{API_FOOTBALL_ODDS_URL.format(host=host)}?{query}"
+    req = urllib.request.Request(url, headers={"x-apisports-key": api_key})
+    with urllib.request.urlopen(req, timeout=25) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if errors:
+        return {
+            "status": "error",
+            "source": "api-football-odds",
+            "checked_at": checked_at,
+            "matches": {},
+            "unknown_names": [],
+            "error": str(errors)[:180],
+            "url": API_FOOTBALL_ODDS_URL.format(host=host),
+        }
+    out = parse_api_football_odds_payload(
+        payload,
+        teams,
+        fixture_lookup=fixture_lookup,
+        checked_at=checked_at,
+    )
+    out["url"] = API_FOOTBALL_ODDS_URL.format(host=host)
     return out
 
 
