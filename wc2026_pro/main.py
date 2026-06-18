@@ -14,7 +14,7 @@ from backtest import run_backtest
 from tournament import Predictor, simulate
 from form import attack_mult, build_form_adjustments
 from calibration import apply_temperature
-from scorelines import scoreline_summary
+from scorelines import calibrate_scoreline_grid, scoreline_summary, top_scorelines
 
 HERE = os.path.dirname(__file__)
 TEMPLATE_MD = {1: [(0,1),(2,3)], 2: [(0,2),(3,1)], 3: [(3,0),(1,2)]}
@@ -115,6 +115,23 @@ def _calibrate_summary_wdl(summary, temperature):
         temperature,
     )
     return out
+
+def _calibrate_summary_scorelines(summary, rho):
+    from engine import grid as _grid
+    raw_grid = _grid(summary["lh"], summary["la"], rho, 8)
+    calibrated_grid, scoreline_model = calibrate_scoreline_grid(
+        raw_grid,
+        summary["lh"],
+        summary["la"],
+        summary["w"],
+        summary["d"],
+        summary["l"],
+    )
+    out = dict(summary)
+    out["top"] = top_scorelines(calibrated_grid)
+    out["scoreline_model"] = scoreline_model
+    grid6 = [[round(float(calibrated_grid[i][j]), 4) for j in range(6)] for i in range(6)]
+    return out, grid6
 
 def _result_code(hg, ag):
     return "H" if hg > ag else "D" if hg == ag else "A"
@@ -223,6 +240,8 @@ def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None, wdl_temp
     av_h, av_a, note = availability_mult(home, away)
     base = _calibrate_summary_wdl(summarize(lh*fm_h*ch, la*fm_a*ca, dc.rho), wdl_temperature)
     judg = _calibrate_summary_wdl(summarize(lh*fm_h*ch*av_h, la*fm_a*ca*av_a, dc.rho), wdl_temperature)
+    base, _base_grid6 = _calibrate_summary_scorelines(base, dc.rho)
+    judg, grid6 = _calibrate_summary_scorelines(judg, dc.rho)
 
     # P5 -> per-match confidence interval via parameter-uncertainty bootstrap
     ih, ia = dc.idx[home], dc.idx[away]; g = 0.0 if neutral else dc.gamma
@@ -241,10 +260,6 @@ def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None, wdl_temp
     ci = {"w":[round(float(np.percentile(ws,5)),3), round(float(np.percentile(ws,95)),3)],
           "d":[round(float(np.percentile(ds,5)),3), round(float(np.percentile(ds,95)),3)],
           "l":[round(float(np.percentile(ls,5)),3), round(float(np.percentile(ls,95)),3)]}
-    # 6x6 scoreline grid (absolute probs) for the heatmap
-    from engine import grid as _grid
-    G = _grid(lh*fm_h*ch*av_h, la*fm_a*ca*av_a, dc.rho, 8)
-    grid6 = [[round(float(G[i][j]),4) for j in range(6)] for i in range(6)]
     adv = advanced_markets(lh*fm_h*ch*av_h, la*fm_a*ca*av_a, dc.rho, home, away)
     return base, judg, src, note, mkt, ci, grid6, adv
 
@@ -264,7 +279,7 @@ def analysis_zh(home, away, judg, ci, mkt, note, host):
     s += "预计" + ("场面开放、进球较多。" if tg>2.9 else "比赛偏闷、机会不多。" if tg<2.3 else "进球数中等。")
     s += f"下半场更可能出球（破门概率 {judg['h2g']*100:.0f}% vs 上半场 {judg['h1g']*100:.0f}%），"
     s += f"{fav}更可能在下半场拉开而非开局速胜。"
-    sl = scoreline_summary(judg["top"])
+    sl = scoreline_summary(judg["top"], judg.get("scoreline_model"))
     if sl["concentration"] == "low":
         top3 = " / ".join(f"{item['score']} {item['prob']*100:.0f}%" for item in sl["top3"])
         s += f"精确比分属于低集中度分布，Top 3（{top3}）比单一比分更有参考价值。"
@@ -418,9 +433,9 @@ function htft(m){const rows=m.advanced.htft.rows,cols=["H","D","A"];let mx=0;
  return h+'</div><div class="legend">H = 主胜，D = 平局，A = 客胜；金框为最高概率 HT/FT 组合。</div>';}
 function scorelineBlock(m){
  const sl=m.scoreline||{},items=sl.top3||m.judgment.top.slice(0,3).map(x=>({score:`${x[0]}-${x[1]}`,prob:x[2]}));
- return `<div><div style="font-size:11px;color:var(--mut)">Exact Score Top 3 · 比分候选</div>
+ return `<div><div style="font-size:11px;color:var(--mut)">Calibrated Exact Score Top 3 · 比分候选</div>
   <div class="scorechips">${items.map((x,i)=>`<span class="scorechip"><b>${esc(x.score)}</b><span>${i==0?'Mode':'Alt'} · ${pct(x.prob)}%</span></span>`).join("")}</div>
-  <div class="scorehint">单一精确比分概率通常很低；Top 3 和下方热力图比只看一个比分更可靠。</div></div>
+  <div class="scorehint">tempo/overdispersion 校准后展示；胜平负总概率保持不变，Top 3 和热力图比只看一个比分更可靠。</div></div>
   <div class="cf">Scoreline<br>concentration<b>${esc(sl.concentration_label||"分布")}</b><span style="font-size:11px">Mode ${pct(sl.mode_prob||items[0].prob)}%</span></div>`;
 }
 function report(m){const r=m.judgment,ci=m.ci,p=m.played;
@@ -495,7 +510,7 @@ document.getElementById("modelcard").innerHTML=
  `<div><span class="metric">训练来源 <b>${source}</b></span><span class="metric">历史样本 <b>${bt.n_history||0}</b></span><span class="metric">集成权重(Dixon-Coles) <b>${pct(PRED.ensemble_weight_dc)}%</b></span><span class="metric">WDL 校准温度 <b>${calib.wdl_temperature||1}</b></span><span class="metric">主场优势 γ <b>${bt.dc_gamma}</b></span><span class="metric">低比分相关 ρ <b>${bt.dc_rho}</b></span><span class="metric">测试样本 <b>${bt.n_test}</b></span></div>
  <table class="tbl" style="margin-top:10px"><thead><tr><th>模型（留出测试集）</th><th class="n">LogLoss</th><th class="n">Brier</th><th class="n">RPS↓</th></tr></thead><tbody>
  ${mrow("本模型（校准后）",T.model,1)}${T.raw_model?mrow("本模型（未校准）",T.raw_model):""}${mrow("仅 Elo",T.elo_only)}${mrow("仅 Dixon-Coles",T.dc_only)}${mrow("朴素基准",T.baseline)}${mrow("锐利盘口基准",T.sharp_market_proxy)}</tbody></table>
- <small>数值越低越好。Brier / LogLoss / RPS 衡量的是概率准不准，比“精确比分”更有价值；精确比分本身随机性很高，最可能比分通常只是方向参考。</small>
+ <small>数值越低越好。Brier / LogLoss / RPS 衡量的是概率准不准，比“精确比分”更有价值；精确比分层使用 tempo/overdispersion 校准并保持胜平负总概率不变。</small>
  <div class="note" style="margin-top:12px">数据说明：云端会优先用 API-Football + openfootball 历史赛果重新拟合；胜平负概率使用验证集 temperature scaling 做校准。若历史样本不足，页面会明确显示为“拟真回退样本”，不会假装成真实历史。</div>`;
 chips();list();</script></body></html>"""
 
@@ -528,6 +543,7 @@ def main():
                     w=round(s["w"],4), d=round(s["d"],4), l=round(s["l"],4),
                     btts=round(s["btts"],3), over=round(s["over"],3),
                     top=[[int(i),int(j),round(p,4)] for (i,j),p in s["top"]],
+                    scoreline_model=s.get("scoreline_model"),
                     hw=round(s["hw"],3), hd=round(s["hd"],3), hl=round(s["hl"],3),
                     h1=round(s["h1"],2), h2=round(s["h2"],2),
                     h1g=round(s["h1g"],3), h2g=round(s["h2g"],3))
@@ -543,7 +559,7 @@ def main():
         matches.append({**f, "src":src, "note":note,
                         "played": list(played) if played else None,
                         "model": pack(base), "judgment": pack(judg),
-                        "scoreline": scoreline_summary(judg["top"]),
+                        "scoreline": scoreline_summary(judg["top"], judg.get("scoreline_model")),
                         "ci":ci, "market":mkt, "grid6":grid6, "advanced":advanced, "analysis":ana,
                         "fresh": meta["fresh"], "played_source": meta["played_source"],
                         "public_signals": meta["public_signals"]})

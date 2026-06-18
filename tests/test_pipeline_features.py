@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import math
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "wc2026_pro"))
@@ -326,6 +327,31 @@ class FormAdjustmentFeatureTests(unittest.TestCase):
 
 
 class AdvancedMarketFeatureTests(unittest.TestCase):
+    def _poisson_grid(self, lh, la, maxg=8):
+        grid = []
+        total = 0.0
+        for i in range(maxg):
+            row = []
+            for j in range(maxg):
+                prob = math.exp(-lh) * lh**i / math.factorial(i)
+                prob *= math.exp(-la) * la**j / math.factorial(j)
+                row.append(prob)
+                total += prob
+            grid.append(row)
+        return [[prob / total for prob in row] for row in grid]
+
+    def _result_totals(self, grid):
+        home = draw = away = 0.0
+        for i, row in enumerate(grid):
+            for j, prob in enumerate(row):
+                if i > j:
+                    home += prob
+                elif i == j:
+                    draw += prob
+                else:
+                    away += prob
+        return home, draw, away
+
     def test_advanced_markets_are_derived_from_goal_distribution(self):
         from main import advanced_markets
 
@@ -367,6 +393,35 @@ class AdvancedMarketFeatureTests(unittest.TestCase):
         self.assertEqual(summary["concentration"], "low")
         self.assertEqual(summary["concentration_label"], "低集中度")
         self.assertLess(summary["mode_gap"], 0.025)
+
+    def test_scoreline_calibration_preserves_result_probabilities(self):
+        from scorelines import calibrate_scoreline_grid
+
+        raw = self._poisson_grid(1.6, 1.0)
+        targets = self._result_totals(raw)
+
+        calibrated, meta = calibrate_scoreline_grid(raw, 1.6, 1.0, *targets)
+        totals = self._result_totals(calibrated)
+
+        self.assertEqual(meta["model"], "tempo_overdispersion")
+        self.assertAlmostEqual(sum(sum(row) for row in calibrated), 1.0, places=7)
+        for actual, expected in zip(totals, targets):
+            self.assertAlmostEqual(actual, expected, places=7)
+
+    def test_scoreline_calibration_reduces_mechanical_one_nil_mode(self):
+        from scorelines import calibrate_scoreline_grid, scoreline_summary, top_scorelines
+
+        raw = self._poisson_grid(1.6, 1.0)
+        raw_summary = scoreline_summary(top_scorelines(raw))
+        targets = self._result_totals(raw)
+
+        calibrated, _meta = calibrate_scoreline_grid(raw, 1.6, 1.0, *targets)
+        calibrated_summary = scoreline_summary(top_scorelines(calibrated))
+
+        self.assertEqual(raw_summary["top3"][0]["score"], "1-0")
+        self.assertLess(calibrated[1][0], raw[1][0])
+        self.assertNotEqual(calibrated_summary["top3"][0]["score"], "1-0")
+        self.assertIn(calibrated_summary["top3"][0]["score"], {"1-1", "2-0", "2-1"})
 
 
 class MainPayloadFeatureTests(unittest.TestCase):
