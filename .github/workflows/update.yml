@@ -6,6 +6,8 @@
 name: Update WC2026 predictions
 
 on:
+  push:
+    branches: ["main"]       # deploy immediately after committed model/page changes.
   schedule:
     - cron: "*/30 * * * *"    # every 30 minutes; GitHub cron is UTC and may run a few minutes late.
   workflow_dispatch: {}         # adds a "Run workflow" button for manual runs
