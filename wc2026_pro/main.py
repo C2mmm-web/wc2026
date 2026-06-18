@@ -290,9 +290,9 @@ def analysis_zh(home, away, judg, ci, mkt, note, host):
     s += f"下半场更可能出球（破门概率 {judg['h2g']*100:.0f}% vs 上半场 {judg['h1g']*100:.0f}%），"
     s += f"{fav}更可能在下半场拉开而非开局速胜。"
     sl = scoreline_summary(judg["top"], judg.get("scoreline_model"))
-    if sl["concentration"] == "low":
+    if not sl.get("single_pick"):
         top3 = " / ".join(f"{item['score']} {item['prob']*100:.0f}%" for item in sl["top3"])
-        s += f"精确比分属于低集中度分布，Top 3（{top3}）比单一比分更有参考价值。"
+        s += f"精确比分无单一优势，Top 3（{top3}）比单押一个比分更有参考价值。"
     if host: s += f"{home}坐拥东道主之利。"
     if mkt:
         mfp = mkt[0] if fav==home else mkt[2]
@@ -448,10 +448,12 @@ function htft(m){const rows=m.advanced.htft.rows,cols=["H","D","A"];let mx=0;
  return h+'</div><div class="legend">H = 主胜，D = 平局，A = 客胜；金框为最高概率 HT/FT 组合。</div>';}
 function scorelineBlock(m){
  const sl=m.scoreline||{},items=sl.top3||m.judgment.top.slice(0,3).map(x=>({score:`${x[0]}-${x[1]}`,prob:x[2]}));
- return `<div><div style="font-size:11px;color:var(--mut)">Calibrated Exact Score Top 3 · 比分候选</div>
-  <div class="scorechips">${items.map((x,i)=>`<span class="scorechip"><b>${esc(x.score)}</b><span>${i==0?'Mode':'Alt'} · ${pct(x.prob)}%</span></span>`).join("")}</div>
-  <div class="scorehint">tempo/overdispersion 校准后展示；胜平负总概率保持不变，Top 3 和热力图比只看一个比分更可靠。</div></div>
-  <div class="cf">Scoreline<br>concentration<b>${esc(sl.concentration_label||"分布")}</b><span style="font-size:11px">Mode ${pct(sl.mode_prob||items[0].prob)}%</span></div>`;
+ const single=!!sl.single_pick;
+ const title=single?'Primary Exact Score · 清晰单点':'Exact Score Distribution · 无单一精确比分优势';
+ return `<div><div style="font-size:11px;color:var(--mut)">${title}</div>
+  <div class="scorechips">${items.map((x,i)=>`<span class="scorechip"><b>${esc(x.score)}</b><span>${single&&i==0?'Primary':'Candidate'} · ${pct(x.prob)}%</span></span>`).join("")}</div>
+  <div class="scorehint">${single?'该比分通过单点置信门槛。':'Top 1 概率和领先差距不足，不把任何一个比分当主预测。'} tempo/overdispersion 校准后展示；胜平负总概率保持不变。</div></div>
+  <div class="cf">Scoreline<br>confidence<b>${single?'Single':'Distribution'}</b><span style="font-size:11px">${esc(sl.concentration_label||"分布")} · ${pct(sl.mode_prob||items[0].prob)}%</span></div>`;
 }
 function report(m){const r=m.judgment,ci=m.ci,p=m.played;
  const fav=r.w>=r.l?m.home:m.away, fp=Math.max(r.w,r.l);

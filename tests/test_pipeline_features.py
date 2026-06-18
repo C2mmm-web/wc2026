@@ -611,6 +611,27 @@ class AdvancedMarketFeatureTests(unittest.TestCase):
         self.assertEqual(summary["concentration"], "low")
         self.assertEqual(summary["concentration_label"], "低集中度")
         self.assertLess(summary["mode_gap"], 0.025)
+        self.assertFalse(summary["single_pick"])
+        self.assertIn("无单一", summary["primary_label"])
+
+    def test_scoreline_summary_only_promotes_clear_single_pick(self):
+        from scorelines import scoreline_summary
+
+        clear = scoreline_summary([
+            ((2, 0), 0.201),
+            ((1, 1), 0.112),
+            ((2, 1), 0.091),
+        ])
+        noisy = scoreline_summary([
+            ((1, 1), 0.136),
+            ((2, 1), 0.094),
+            ((1, 2), 0.091),
+        ])
+
+        self.assertTrue(clear["single_pick"])
+        self.assertEqual(clear["primary_label"], "2-0")
+        self.assertFalse(noisy["single_pick"])
+        self.assertIn("无单一", noisy["primary_label"])
 
     def test_scoreline_calibration_preserves_result_probabilities(self):
         from scorelines import calibrate_scoreline_grid

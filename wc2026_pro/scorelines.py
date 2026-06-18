@@ -125,12 +125,15 @@ def scoreline_summary(top, model_info=None):
         concentration, label = "medium", "中集中度"
     else:
         concentration, label = "low", "低集中度"
+    single_pick = mode_prob >= 0.16 and mode_gap >= 0.035
     out = {
         "top3": rows[:3],
         "mode_prob": round(mode_prob, 4),
         "mode_gap": round(mode_gap, 4),
         "concentration": concentration,
         "concentration_label": label,
+        "single_pick": single_pick,
+        "primary_label": rows[0]["score"] if single_pick and rows else "无单一精确比分优势",
     }
     if model_info:
         out["model"] = dict(model_info)
