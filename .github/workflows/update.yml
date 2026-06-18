@@ -37,6 +37,8 @@ jobs:
         working-directory: wc2026_pro
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ODDS_API_SPORT_KEY: ${{ vars.ODDS_API_SPORT_KEY || 'soccer_fifa_world_cup' }}
         run: |
           python fetch_results.py || echo "API fetch skipped (no key or unreachable) — using existing data"
           python main.py
@@ -45,6 +47,7 @@ jobs:
           mkdir -p _site
           cp wc2026_predictor.html _site/index.html
           cp wc2026_pro/predictions.json _site/predictions.json
+          cp wc2026_pro/market_odds.json _site/market_odds.json
           cp wc2026_pro/prediction_archive.json _site/prediction_archive.json
           cp wc2026_pro/audit_report.json _site/audit_report.json
       - uses: actions/upload-pages-artifact@v3

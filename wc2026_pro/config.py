@@ -3,7 +3,7 @@ Config for wc2026_pro. The API key is read from the environment / a local
 untracked file — it is NEVER hard-coded here, so this file is safe to push to a
 public GitHub repo.
 
-  • On GitHub Actions: set a repo Secret named API_FOOTBALL_KEY.
+  • On GitHub Actions: set repo Secrets named API_FOOTBALL_KEY and ODDS_API_KEY.
   • Locally (optional): `export API_FOOTBALL_KEY=xxxx`  OR put the key in a file
     named `.api_key` in this folder (it is git-ignored).
 If no key is found, fetch_results.py simply skips the API and the pipeline falls
@@ -21,6 +21,8 @@ def _load_key():
     return None
 
 API_FOOTBALL_KEY = _load_key()
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
+ODDS_API_SPORT_KEY = os.environ.get("ODDS_API_SPORT_KEY", "soccer_fifa_world_cup")
 API_FOOTBALL_HOST = "v3.football.api-sports.io"
 WC_LEAGUE_ID = 1       # FIFA World Cup
 WC_SEASON = 2026

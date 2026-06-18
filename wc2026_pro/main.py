@@ -7,7 +7,7 @@ import json, os, math, csv, datetime
 import numpy as np
 from data import (GROUPS, TEAMS, ELO_PRIOR, HOSTS, MARKET_TITLE, MARKET_MATCH,
                   PLAYED, INJURIES, MODEL_VERSION, LIVE_RESULT_KEYS,
-                  FRESH_RESULT_KEYS, HISTORICAL_RESULTS, UPDATE_STATUS)
+                  FRESH_RESULT_KEYS, HISTORICAL_RESULTS, UPDATE_STATUS, MARKET_STATUS)
 from engine import (elo_lambdas, context_mult, availability_mult, summarize,
                     american_to_prob, devig, _tau, _pois, _goal_exp)
 from backtest import run_backtest
@@ -16,6 +16,7 @@ from form import attack_mult, apply_played_elo_updates, build_combined_adjustmen
 from calibration import apply_temperature
 from scorelines import calibrate_scoreline_grid, exact_scoreline_grid, scoreline_summary, top_scorelines
 from audit import save_audit_artifacts
+from market import market_probabilities
 from tempo import build_live_tempo_adjustment, build_tempo_adjustment
 
 HERE = os.path.dirname(__file__)
@@ -65,7 +66,8 @@ def match_metadata(home, away, played, update_status, fresh_keys, historical_row
     elif historical_rows:
         signals.append(f"历史样本 {len(historical_rows)} 场")
     if (home, away) in MARKET_MATCH:
-        signals.append("含公开盘口校准")
+        line = MARKET_MATCH[(home, away)]
+        signals.append("含动态盘口校准" if isinstance(line, dict) and line.get("dynamic") else "含公开盘口校准")
     for team in (home, away):
         note = (form_adjustments or {}).get(team, {}).get("note")
         if note:
@@ -85,7 +87,10 @@ def match_metadata(home, away, played, update_status, fresh_keys, historical_row
     }
 
 def market_fit(odds):
-    pw, pd, pl = devig(*odds)
+    probs = market_probabilities(odds)
+    if probs is None:
+        probs = devig(*odds)
+    pw, pd, pl = probs
     best = None
     for a in range(10, 360, 6):
         for b in range(10, 360, 6):
@@ -240,8 +245,10 @@ def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None, wdl_temp
     lh = min(8.0, max(0.05, lh)); la = min(8.0, max(0.05, la))
     src = "model"; mkt = None; mh = ma = None
     if (home, away) in MARKET_MATCH:
-        mh, ma = market_fit(MARKET_MATCH[(home, away)])
-        mkt = [round(x,4) for x in devig(*MARKET_MATCH[(home, away)])]
+        line = MARKET_MATCH[(home, away)]
+        mh, ma = market_fit(line)
+        probs = market_probabilities(line) or devig(*line)
+        mkt = [round(x,4) for x in probs]
         lh = 0.5*lh + 0.5*mh; la = 0.5*la + 0.5*ma; src = "market"
     tempo_mult = float(tempo_mult or 1.0)
     lh *= tempo_mult
@@ -401,13 +408,15 @@ const GROUPS={};PRED.matches.forEach(m=>{(GROUPS[m.group]=GROUPS[m.group]||1)});
 const pct=x=>(x*100).toFixed(0);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const ST=PRED.update_status||{},CR=ST.current_results||{},HS=ST.history||{},FB=CR.fallback_source||{};
+const MS=PRED.market_status||{},MM=MS.matches||{};
 const checked=ST.checked_at?ST.checked_at.replace("T"," ").replace("Z"," UTC"):"未运行云端拉取";
+const marketChecked=MS.checked_at?MS.checked_at.replace("T"," ").replace("Z"," UTC"):"未运行盘口拉取";
 const dataLabel=CR.status=="fallback_success"?"免费比分源":"API 比分";
 const apiReason=CR.errors&&CR.status!="fallback_success"?` · ${esc(JSON.stringify(CR.errors)).slice(0,90)}`:"";
 const sourceNote=CR.status=="fallback_success"&&FB.source?` · ${esc(FB.source)}`:"";
 document.getElementById("sub").innerHTML=`Dixon-Coles + Elo 集成模型 · 版本 v${PRED.version} · 数据日期 ${PRED.generated}<br>点击任意一场，查看比分概率、置信区间、公开信号和文字解读。`;
 document.getElementById("status").innerHTML=
- `<span>最后云端更新 <b>${checked}</b></span><span>${dataLabel} <b>${CR.status||"not_run"}</b> · 完赛 ${CR.finished||0} · 待赛 ${CR.upcoming||0}${sourceNote}${apiReason}</span><span>历史拟合 <b>${HS.status||"not_run"}</b> · 样本 ${HS.matches||0}</span>`;
+ `<span>最后云端更新 <b>${checked}</b></span><span>${dataLabel} <b>${CR.status||"not_run"}</b> · 完赛 ${CR.finished||0} · 待赛 ${CR.upcoming||0}${sourceNote}${apiReason}</span><span>动态盘口 <b>${MS.status||"not_run"}</b> · ${Object.keys(MM).length} 场 · ${marketChecked}</span><span>历史拟合 <b>${HS.status||"not_run"}</b> · 样本 ${HS.matches||0}</span>`;
 
 /* ---- filters + list ---- */
 let curMD=1,curGP="all";
@@ -642,6 +651,7 @@ def main():
              "generated":datetime.date.today().isoformat(),
              "generated_at":datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
              "update_status":UPDATE_STATUS,
+             "market_status":MARKET_STATUS,
              "form_adjustments":form_adjustments,
              "tempo_adjustment":tempo_adjustment,
              "live_elo_adjustment":live_elo_adjustment,

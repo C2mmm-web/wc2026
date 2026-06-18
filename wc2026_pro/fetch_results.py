@@ -18,8 +18,17 @@ import re
 import sys
 import urllib.request
 import unicodedata
-from config import API_FOOTBALL_KEY, API_FOOTBALL_HOST, WC_LEAGUE_ID, WC_SEASON, HISTORY_SEASONS
+from config import (
+    API_FOOTBALL_KEY,
+    API_FOOTBALL_HOST,
+    ODDS_API_KEY,
+    ODDS_API_SPORT_KEY,
+    WC_LEAGUE_ID,
+    WC_SEASON,
+    HISTORY_SEASONS,
+)
 from data import TEAMS
+from market import fetch_the_odds_api
 
 HERE = os.path.dirname(__file__)
 OPENFOOTBALL_CURRENT_URL = (
@@ -350,7 +359,7 @@ def build_fetch_outputs(current_data, history_payloads, previous_results=None, c
         },
     }
 
-def write_outputs(outputs):
+def write_outputs(outputs, market_odds=None):
     json.dump(outputs["finished"], open(os.path.join(HERE, "live_results.json"), "w"),
               ensure_ascii=False, indent=1)
     json.dump(outputs["upcoming"], open(os.path.join(HERE, "live_fixtures.json"), "w"),
@@ -361,9 +370,61 @@ def write_outputs(outputs):
               ensure_ascii=False, indent=1)
     json.dump(outputs["status"], open(os.path.join(HERE, "update_status.json"), "w"),
               ensure_ascii=False, indent=1)
+    json.dump(market_odds or {"status": "not_run", "matches": {}}, open(os.path.join(HERE, "market_odds.json"), "w"),
+              ensure_ascii=False, indent=1)
+
+def _read_json_sidecar(here, name, default):
+    path = os.path.join(here, name)
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path) as fp:
+            return json.load(fp)
+    except Exception:
+        return default
+
+def preserve_previous_sidecars(outputs, here=HERE):
+    current_status = (outputs.get("status") or {}).get("current_results") or {}
+    fallback_status = (current_status.get("fallback_source") or {}).get("status")
+    current_unavailable = current_status.get("status") in ("error", "no_key") and fallback_status != "success"
+    if current_unavailable and not outputs.get("finished") and not outputs.get("upcoming"):
+        previous_finished = _read_json_sidecar(here, "live_results.json", {})
+        previous_upcoming = _read_json_sidecar(here, "live_fixtures.json", [])
+        if previous_finished or previous_upcoming:
+            outputs["finished"] = previous_finished if isinstance(previous_finished, dict) else {}
+            outputs["upcoming"] = previous_upcoming if isinstance(previous_upcoming, list) else []
+            outputs["fresh_results"] = {}
+            current_status["status"] = "preserved"
+            current_status["preserved_reason"] = "current sources unavailable; kept previous sidecars"
+            current_status["finished"] = len(outputs["finished"])
+            current_status["upcoming"] = len(outputs["upcoming"])
+
+    history_status = (outputs.get("status") or {}).get("history") or {}
+    if not outputs.get("historical_results") and history_status.get("status") in ("error", "empty", "no_key"):
+        previous_history = _read_json_sidecar(here, "historical_results.json", [])
+        if isinstance(previous_history, list) and previous_history:
+            outputs["historical_results"] = previous_history
+            history_status["status"] = "preserved"
+            history_status["preserved_reason"] = "history sources unavailable; kept previous sidecar"
+            history_status["matches"] = len(previous_history)
+    return outputs
+
+def fetch_market_odds_safe():
+    try:
+        return fetch_the_odds_api(ODDS_API_KEY, TEAMS, sport_key=ODDS_API_SPORT_KEY)
+    except Exception as e:
+        return {
+            "status": "error",
+            "source": "the-odds-api",
+            "sport_key": ODDS_API_SPORT_KEY,
+            "matches": {},
+            "unknown_names": [],
+            "error": str(e)[:180],
+        }
 
 def main():
     previous, previous_status = previous_results_from_pages()
+    market_odds = fetch_market_odds_safe()
     try:
         fallback_current = fetch_openfootball_current()
     except Exception as e:
@@ -401,8 +462,9 @@ def main():
             outputs["status"]["current_results"]["status"] = "no_key"
         if not outputs["historical_results"]:
             outputs["status"]["history"]["status"] = "no_key"
-        write_outputs(outputs)
+        write_outputs(preserve_previous_sidecars(outputs), market_odds=market_odds)
         print("[fetch_results] no API key set — wrote keyless current results from fallback source")
+        print(f"[fetch_results] market odds status={market_odds.get('status')} matches={len(market_odds.get('matches', {}))}")
         return
     try:
         data = api(f"fixtures?league={WC_LEAGUE_ID}&season={WC_SEASON}")
@@ -430,9 +492,11 @@ def main():
                                   fallback_current=fallback_current, fallback_history=fallback_history)
     outputs["status"]["previous_site"] = previous_status
 
-    write_outputs(outputs)
+    outputs = preserve_previous_sidecars(outputs)
+    write_outputs(outputs, market_odds=market_odds)
     print(f"[fetch_results] finished={len(outputs['finished'])} upcoming={len(outputs['upcoming'])} "
           f"fresh={len(outputs['fresh_results'])} history={len(outputs['historical_results'])}")
+    print(f"[fetch_results] market odds status={market_odds.get('status')} matches={len(market_odds.get('matches', {}))}")
     if outputs["status"]["unknown_api_names"]:
         print("[fetch_results] UNMAPPED names (add to _ALIASES):", outputs["status"]["unknown_api_names"])
 

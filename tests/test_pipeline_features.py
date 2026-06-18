@@ -2,6 +2,8 @@ import os
 import sys
 import unittest
 import math
+import json
+import tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "wc2026_pro"))
@@ -16,6 +18,42 @@ def fixture(home, away, hg, ag, status="FT", date="2026-06-14T13:00:00+00:00"):
 
 
 class FetchResultsFeatureTests(unittest.TestCase):
+    def test_the_odds_api_payload_becomes_market_probabilities(self):
+        from market import parse_the_odds_payload
+
+        payload = [
+            {
+                "home_team": "Brazil",
+                "away_team": "Morocco",
+                "commence_time": "2026-06-14T18:00:00Z",
+                "bookmakers": [
+                    {
+                        "title": "ExampleBook",
+                        "last_update": "2026-06-14T12:00:00Z",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "Brazil", "price": -175},
+                                    {"name": "Draw", "price": 300},
+                                    {"name": "Morocco", "price": 425},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        out = parse_the_odds_payload(payload, ["Brazil", "Morocco"], checked_at="2026-06-14T12:00:00Z")
+
+        self.assertEqual(out["status"], "success")
+        self.assertIn("Brazil|Morocco", out["matches"])
+        row = out["matches"]["Brazil|Morocco"]
+        self.assertEqual(row["bookmakers"], 1)
+        self.assertAlmostEqual(sum(row["probs"]), 1.0, places=3)
+        self.assertGreater(row["probs"][0], row["probs"][2])
+
     def test_openfootball_history_payload_becomes_training_rows(self):
         from fetch_results import openfootball_history_from_payload
 
@@ -220,6 +258,31 @@ class FetchResultsFeatureTests(unittest.TestCase):
         out = build_fetch_outputs({"errors": [], "response": []}, [])
 
         self.assertTrue(out["status"]["checked_at"].endswith("Z"))
+
+    def test_preserve_previous_sidecars_when_sources_are_unavailable(self):
+        from fetch_results import build_fetch_outputs, preserve_previous_sidecars
+
+        outputs = build_fetch_outputs(
+            {"errors": {"request": "dns"}, "response": []},
+            [],
+            fallback_current={"status": "error", "finished": {}, "upcoming": []},
+            fallback_history={"status": "error", "rows": []},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "live_results.json"), "w") as fp:
+                json.dump({"Mexico|South Africa": [2, 0]}, fp)
+            with open(os.path.join(tmp, "live_fixtures.json"), "w") as fp:
+                json.dump([{"home": "Brazil", "away": "Morocco"}], fp)
+            with open(os.path.join(tmp, "historical_results.json"), "w") as fp:
+                json.dump([{"home": "France", "away": "Croatia", "home_goals": 4, "away_goals": 2}], fp)
+
+            preserved = preserve_previous_sidecars(outputs, here=tmp)
+
+        self.assertEqual(preserved["finished"]["Mexico|South Africa"], [2, 0])
+        self.assertEqual(preserved["upcoming"][0]["home"], "Brazil")
+        self.assertEqual(preserved["historical_results"][0]["home"], "France")
+        self.assertEqual(preserved["status"]["current_results"]["status"], "preserved")
+        self.assertEqual(preserved["status"]["history"]["status"], "preserved")
 
 
 class PredictionAuditFeatureTests(unittest.TestCase):
@@ -685,6 +748,19 @@ class AdvancedMarketFeatureTests(unittest.TestCase):
         )
         self.assertEqual(markets["totals"]["over_under"][0]["line"], 2.5)
         self.assertIn(markets["handicap"]["home_hcap"], (-2, -1, 0, 1, 2))
+
+    def test_market_fit_accepts_dynamic_probability_record(self):
+        from main import market_fit
+        from market import market_probabilities
+
+        line = {"probs": [0.62, 0.23, 0.15], "source": "the-odds-api", "dynamic": True}
+
+        probs = market_probabilities(line)
+        lh, la = market_fit(line)
+
+        self.assertAlmostEqual(sum(probs), 1.0, places=7)
+        self.assertGreater(probs[0], probs[2])
+        self.assertGreater(lh, la)
 
     def test_scoreline_summary_marks_close_modes_as_low_concentration(self):
         from scorelines import scoreline_summary

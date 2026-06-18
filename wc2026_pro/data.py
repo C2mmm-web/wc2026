@@ -110,6 +110,28 @@ MARKET_MATCH = {
     ("Sweden", "Tunisia"): (-111, 255, 350),
 }
 
+MARKET_STATUS = _load_json_sidecar("market_odds.json", {
+    "status": "not_run",
+    "source": "none",
+    "matches": {},
+})
+for _k, _row in (MARKET_STATUS.get("matches") or {}).items():
+    try:
+        _h, _a = _k.split("|")
+        _probs = _row.get("probs")
+        if _h in TEAMS and _a in TEAMS and isinstance(_probs, list) and len(_probs) >= 3:
+            _rec = dict(_row)
+            _rec["probs"] = [float(_probs[0]), float(_probs[1]), float(_probs[2])]
+            _rec["dynamic"] = True
+            MARKET_MATCH[(_h, _a)] = _rec
+            _rev = dict(_rec)
+            _rev["home"], _rev["away"] = _a, _h
+            _rev["probs"] = [_rec["probs"][2], _rec["probs"][1], _rec["probs"][0]]
+            _rev["reversed"] = True
+            MARKET_MATCH[(_a, _h)] = _rev
+    except Exception as _e:
+        print("[data] could not merge market_odds.json row:", _e)
+
 # ---- Venue context: altitude (m) and a heat index 0..1 for host summer venues ----
 # (P6) Affects fatigue/finishing; only a few venues are extreme.
 VENUE = {

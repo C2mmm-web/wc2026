@@ -1,2 +1,14 @@
 __pycache__/
 *.pyc
+wc2026_pro/audit_report.json
+wc2026_pro/backtest_report.json
+wc2026_pro/fresh_results.json
+wc2026_pro/historical_results.json
+wc2026_pro/live_fixtures.json
+wc2026_pro/live_results.json
+wc2026_pro/market_odds.json
+wc2026_pro/prediction_archive.json
+wc2026_pro/prediction_log.csv
+wc2026_pro/predictions.json
+wc2026_pro/ratings.json
+wc2026_pro/update_status.json
