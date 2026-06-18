@@ -12,11 +12,11 @@ from engine import (elo_lambdas, context_mult, availability_mult, summarize,
                     american_to_prob, devig, _tau, _pois, _goal_exp)
 from backtest import run_backtest
 from tournament import Predictor, simulate
-from form import attack_mult, build_combined_adjustments
+from form import attack_mult, apply_played_elo_updates, build_combined_adjustments, defense_mult
 from calibration import apply_temperature
 from scorelines import calibrate_scoreline_grid, scoreline_summary, top_scorelines
 from audit import save_audit_artifacts
-from tempo import build_tempo_adjustment
+from tempo import build_live_tempo_adjustment, build_tempo_adjustment
 
 HERE = os.path.dirname(__file__)
 TEMPLATE_MD = {1: [(0,1),(2,3)], 2: [(0,2),(3,1)], 3: [(3,0),(1,2)]}
@@ -242,8 +242,8 @@ def predict_match(elo, dc, w, home, away, B=300, form_adjustments=None, wdl_temp
     tempo_mult = float(tempo_mult or 1.0)
     lh *= tempo_mult
     la *= tempo_mult
-    fm_h = attack_mult(form_adjustments, home)
-    fm_a = attack_mult(form_adjustments, away)
+    fm_h = attack_mult(form_adjustments, home) * defense_mult(form_adjustments, away)
+    fm_a = attack_mult(form_adjustments, away) * defense_mult(form_adjustments, home)
     ch, ca = context_mult(home, away)
     av_h, av_a, note = availability_mult(home, away)
     base = _calibrate_summary_wdl(summarize(lh*fm_h*ch, la*fm_a*ca, dc.rho), wdl_temperature)
@@ -553,14 +553,15 @@ const mrow=(l,o,b)=>`<tr><td>${l}</td><td class="n ${b?'best':''}">${o.logloss}<
 const source=bt.data_source=="real_worldcup_history"||bt.data_source=="api_football_history"?"真实世界杯历史赛果":"拟真回退样本";
 const calib=bt.calibration||{};
 const tempo=PRED.tempo_adjustment||{goal_mult:1,source:"neutral",matches:0,note:"赛事节奏中性"};
+const liveElo=PRED.live_elo_adjustment||{};
 const SL=T.scoreline||{};
 document.getElementById("modelcard").innerHTML=
- `<div><span class="metric">训练来源 <b>${source}</b></span><span class="metric">历史样本 <b>${bt.n_history||0}</b></span><span class="metric">赛事节奏 <b>x${tempo.goal_mult}</b></span><span class="metric">集成权重(Dixon-Coles) <b>${pct(PRED.ensemble_weight_dc)}%</b></span><span class="metric">WDL 校准温度 <b>${calib.wdl_temperature||1}</b></span><span class="metric">主场优势 γ <b>${bt.dc_gamma}</b></span><span class="metric">低比分相关 ρ <b>${bt.dc_rho}</b></span><span class="metric">测试样本 <b>${bt.n_test}</b></span></div>
+ `<div><span class="metric">训练来源 <b>${source}</b></span><span class="metric">历史样本 <b>${bt.n_history||0}</b></span><span class="metric">赛事节奏 <b>x${tempo.goal_mult}</b></span><span class="metric">赛内 Elo <b>${liveElo.matches||0} 场</b></span><span class="metric">最大 Elo 位移 <b>${liveElo.max_abs_shift||0}</b></span><span class="metric">集成权重(Dixon-Coles) <b>${pct(PRED.ensemble_weight_dc)}%</b></span><span class="metric">WDL 校准温度 <b>${calib.wdl_temperature||1}</b></span><span class="metric">主场优势 γ <b>${bt.dc_gamma}</b></span><span class="metric">低比分相关 ρ <b>${bt.dc_rho}</b></span><span class="metric">测试样本 <b>${bt.n_test}</b></span></div>
  <table class="tbl" style="margin-top:10px"><thead><tr><th>模型（留出测试集）</th><th class="n">LogLoss</th><th class="n">Brier</th><th class="n">RPS↓</th></tr></thead><tbody>
  ${mrow("本模型（校准后）",T.model,1)}${T.raw_model?mrow("本模型（未校准）",T.raw_model):""}${mrow("仅 Elo",T.elo_only)}${mrow("仅 Dixon-Coles",T.dc_only)}${mrow("朴素基准",T.baseline)}${mrow("锐利盘口基准",T.sharp_market_proxy)}</tbody></table>
  <div style="margin-top:8px"><span class="metric">历史精确比分 Top1 <b>${auditPct(SL.exact_top1)}</b></span><span class="metric">历史精确比分 Top3 <b>${auditPct(SL.exact_top3)}</b></span><span class="metric">平均最高比分概率 <b>${auditPct(SL.avg_top1_prob)}</b></span><span class="metric">比分测试样本 <b>${SL.n||0}</b></span></div>
  <small>数值越低越好。Brier / LogLoss / RPS 衡量的是概率准不准，比“精确比分”更有价值；精确比分层使用 tempo/overdispersion 校准并保持胜平负总概率不变。</small>
- <div class="note" style="margin-top:12px">数据说明：云端会优先用 API-Football + openfootball 历史赛果重新拟合；胜平负概率使用验证集 temperature scaling 做校准。${esc(tempo.note)} 精确比分只应读作概率候选簇，不能当成高命中率单点承诺；正式命中率只统计赛前已归档样本，赛后重算不计入。</div>`;
+ <div class="note" style="margin-top:12px">数据说明：云端会优先用 API-Football + openfootball 历史赛果重新拟合；胜平负概率使用验证集 temperature scaling 做校准。${esc(liveElo.note||"")} ${esc(tempo.note)} 精确比分只应读作概率候选簇，不能当成高命中率单点承诺；正式命中率只统计赛前已归档样本，赛后重算不计入。</div>`;
 renderAudit();chips();list();</script></body></html>"""
 
 def build_site(payload):
@@ -580,7 +581,11 @@ def main():
 
     print("Running tournament Monte-Carlo with parameter uncertainty…")
     form_adjustments = build_combined_adjustments(GROUPS, PLAYED)
-    tempo_adjustment = build_tempo_adjustment(HISTORICAL_RESULTS)
+    live_elo_adjustment = apply_played_elo_updates(elo, PLAYED)
+    tempo_adjustment = build_live_tempo_adjustment(
+        PLAYED,
+        build_tempo_adjustment(HISTORICAL_RESULTS),
+    )
     pred = Predictor(
         elo,
         dc,
@@ -635,6 +640,7 @@ def main():
              "update_status":UPDATE_STATUS,
              "form_adjustments":form_adjustments,
              "tempo_adjustment":tempo_adjustment,
+             "live_elo_adjustment":live_elo_adjustment,
              "ensemble_weight_dc":round(w,3),
              "backtest":report,"ratings":ratings,
              "matches":matches,"title":title}

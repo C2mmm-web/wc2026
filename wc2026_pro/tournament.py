@@ -11,7 +11,7 @@ import math, random
 import numpy as np
 from data import GROUPS, HOSTS, PLAYED
 from engine import elo_lambdas, _goal_exp, _tau
-from form import attack_mult
+from form import attack_mult, defense_mult
 
 RR = [(0, 1), (2, 3), (0, 2), (3, 1), (3, 0), (1, 2)]   # 3 matchdays
 
@@ -61,8 +61,8 @@ class Predictor:
         la = self.w*ld_a + (1-self.w)*le_a
         lh *= self.tempo_mult
         la *= self.tempo_mult
-        lh *= attack_mult(self.form_adjustments, h)
-        la *= attack_mult(self.form_adjustments, a)
+        lh *= attack_mult(self.form_adjustments, h) * defense_mult(self.form_adjustments, a)
+        la *= attack_mult(self.form_adjustments, a) * defense_mult(self.form_adjustments, h)
         return min(8.0, max(0.05, lh)), min(8.0, max(0.05, la))
     def shootout(self, a, b):
         ea, eb = self.elo[a], self.elo[b]

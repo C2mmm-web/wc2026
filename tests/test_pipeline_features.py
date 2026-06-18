@@ -439,6 +439,17 @@ class FormAdjustmentFeatureTests(unittest.TestCase):
         self.assertEqual(adjustments["Haiti"]["matches"], 1)
         self.assertIn("状态微调", adjustments["Haiti"]["note"])
 
+    def test_form_adjustments_include_defensive_vulnerability(self):
+        from form import build_form_adjustments
+
+        adjustments = build_form_adjustments({
+            ("Spain", "Haiti"): (0, 5),
+        })
+
+        self.assertGreater(adjustments["Spain"]["defense_mult"], 1.0)
+        self.assertLess(adjustments["Haiti"]["defense_mult"], 1.0)
+        self.assertIn("防守", adjustments["Spain"]["note"])
+
     def test_predictor_applies_form_as_small_goal_multiplier(self):
         import numpy as np
         from tournament import Predictor
@@ -469,6 +480,40 @@ class FormAdjustmentFeatureTests(unittest.TestCase):
 
         self.assertAlmostEqual(adj_home / base_home, 1.03, places=6)
         self.assertAlmostEqual(adj_away / base_away, 0.97, places=6)
+
+    def test_predictor_applies_opponent_defensive_vulnerability(self):
+        import numpy as np
+        from tournament import Predictor
+        from data import TEAMS, ELO_PRIOR
+
+        class FakeElo:
+            r = dict(ELO_PRIOR)
+
+        class FakeDc:
+            teams = list(TEAMS)
+            idx = {team: i for i, team in enumerate(teams)}
+            att = np.zeros(len(teams))
+            dff = np.zeros(len(teams))
+            gamma = 0.0
+
+        plain = Predictor(FakeElo(), FakeDc(), w=0.0, rating_sigma=0, param_sigma=0)
+        adjusted = Predictor(
+            FakeElo(),
+            FakeDc(),
+            w=0.0,
+            rating_sigma=0,
+            param_sigma=0,
+            form_adjustments={
+                "Mexico": {"attack_mult": 1.0, "defense_mult": 0.98},
+                "South Africa": {"attack_mult": 1.0, "defense_mult": 1.04},
+            },
+        )
+
+        base_home, base_away = plain.lambdas("Mexico", "South Africa")
+        adj_home, adj_away = adjusted.lambdas("Mexico", "South Africa")
+
+        self.assertAlmostEqual(adj_home / base_home, 1.04, places=6)
+        self.assertAlmostEqual(adj_away / base_away, 0.98, places=6)
 
     def test_group_context_adjustments_are_small_and_stage_aware(self):
         from form import build_group_context_adjustments
@@ -502,6 +547,26 @@ class FormAdjustmentFeatureTests(unittest.TestCase):
         self.assertGreaterEqual(adjustments["South Africa"]["attack_mult"], 0.96)
         self.assertIn("综合微调", adjustments["Mexico"]["note"])
 
+    def test_played_results_update_elo_but_cap_total_movement(self):
+        from engine import EloModel
+        from form import apply_played_elo_updates
+
+        elo = EloModel(prior={"Favorite": 1900, "Underdog": 1500}, k=32, home_adv=0)
+
+        report = apply_played_elo_updates(
+            elo,
+            {("Favorite", "Underdog"): (0, 5)},
+            k=40,
+            max_shift=12,
+        )
+
+        self.assertLess(elo.r["Favorite"], 1900)
+        self.assertGreater(elo.r["Underdog"], 1500)
+        self.assertLessEqual(abs(elo.r["Favorite"] - 1900), 12)
+        self.assertLessEqual(abs(elo.r["Underdog"] - 1500), 12)
+        self.assertEqual(report["matches"], 1)
+        self.assertIn("Elo", report["note"])
+
 
 class TempoAdjustmentFeatureTests(unittest.TestCase):
     def test_tournament_tempo_uses_real_history_with_tight_bounds(self):
@@ -526,6 +591,23 @@ class TempoAdjustmentFeatureTests(unittest.TestCase):
 
         self.assertEqual(tempo["source"], "neutral")
         self.assertEqual(tempo["goal_mult"], 1.0)
+
+    def test_live_tournament_tempo_uses_current_goals_conservatively(self):
+        from tempo import build_live_tempo_adjustment
+
+        played = {
+            (f"Home{i}", f"Away{i}"): (3, 2)
+            for i in range(24)
+        }
+        base = {"goal_mult": 1.01, "note": "历史节奏"}
+
+        tempo = build_live_tempo_adjustment(played, base, min_matches=12)
+
+        self.assertEqual(tempo["source"], "history_plus_live_tournament")
+        self.assertEqual(tempo["matches"], 24)
+        self.assertGreater(tempo["goal_mult"], 1.01)
+        self.assertLessEqual(tempo["goal_mult"], 1.12)
+        self.assertIn("赛内节奏", tempo["note"])
 
     def test_predictor_applies_tempo_symmetrically(self):
         import numpy as np
