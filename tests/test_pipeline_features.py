@@ -886,6 +886,26 @@ class AdvancedMarketFeatureTests(unittest.TestCase):
 
 
 class MainPayloadFeatureTests(unittest.TestCase):
+    def test_fixtures_include_live_knockout_fixtures_without_duplicates(self):
+        from main import fixtures
+
+        rows = fixtures(live_fixtures=[
+            {"home": "France", "away": "Argentina", "round": "Final", "date": "2026-07-19"},
+            {"home": "Mexico", "away": "South Africa", "round": "Matchday 1", "date": "2026-06-11"},
+        ])
+
+        self.assertEqual(len(rows), 73)
+        final = rows[-1]
+        self.assertEqual(final["home"], "France")
+        self.assertEqual(final["away"], "Argentina")
+        self.assertEqual(final["md"], 7)
+        self.assertEqual(final["round_label"], "决赛")
+        self.assertTrue(final["live_fixture"])
+        self.assertEqual(
+            sum(1 for row in rows if {row["home"], row["away"]} == {"Mexico", "South Africa"}),
+            1,
+        )
+
     def test_match_payload_exposes_update_and_public_signal_metadata(self):
         from main import match_metadata
 

@@ -3,11 +3,12 @@ wc2026_pro.main — P8 orchestration & single source of truth.
 Runs the whole pipeline, emits predictions.json / ratings.json / backtest_report.json /
 prediction_log.csv / prediction_archive.json, and rebuilds the webpage embedding the generated predictions.
 """
-import json, os, math, csv, datetime
+import json, os, math, csv, datetime, re
 import numpy as np
 from data import (GROUPS, TEAMS, ELO_PRIOR, HOSTS, MARKET_TITLE, MARKET_MATCH,
                   PLAYED, INJURIES, MODEL_VERSION, LIVE_RESULT_KEYS,
-                  FRESH_RESULT_KEYS, HISTORICAL_RESULTS, UPDATE_STATUS, MARKET_STATUS)
+                  FRESH_RESULT_KEYS, HISTORICAL_RESULTS, UPDATE_STATUS, MARKET_STATUS,
+                  LIVE_FIXTURES)
 from engine import (elo_lambdas, context_mult, availability_mult, summarize,
                     american_to_prob, devig, _tau, _pois, _goal_exp)
 from backtest import run_backtest
@@ -22,12 +23,49 @@ from tempo import build_live_tempo_adjustment, build_tempo_adjustment
 HERE = os.path.dirname(__file__)
 TEMPLATE_MD = {1: [(0,1),(2,3)], 2: [(0,2),(3,1)], 3: [(3,0),(1,2)]}
 
-def fixtures():
+def _live_round_meta(round_name):
+    raw = str(round_name or "").strip()
+    low = raw.lower()
+    if "third" in low or "3rd" in low:
+        return 7, "三四名决赛", "淘汰赛"
+    if "final" in low and "semi" not in low:
+        return 7, "决赛", "淘汰赛"
+    if "semi" in low:
+        return 6, "半决赛", "淘汰赛"
+    if "quarter" in low:
+        return 5, "1/4决赛", "淘汰赛"
+    if "16" in low:
+        return 4, "1/8决赛", "淘汰赛"
+    matchday = re.search(r"(?:matchday|round)\s*(\d+)", low)
+    if matchday:
+        md = int(matchday.group(1))
+        return md, f"第 {md} 轮", "实时"
+    return 4, raw or "实时待赛", "淘汰赛"
+
+def fixtures(live_fixtures=None):
     out = []
     for g, t in GROUPS.items():
         for md, pairs in TEMPLATE_MD.items():
             for i, j in pairs:
-                out.append({"group": g, "md": md, "home": t[i], "away": t[j]})
+                out.append({"group": g, "md": md, "round_label": f"{g}组·R{md}", "home": t[i], "away": t[j]})
+    seen = {(row["home"], row["away"]) for row in out}
+    seen |= {(row["away"], row["home"]) for row in out}
+    for row in live_fixtures if live_fixtures is not None else LIVE_FIXTURES:
+        h, a = row.get("home"), row.get("away")
+        if h not in TEAMS or a not in TEAMS or (h, a) in seen:
+            continue
+        md, label, group = _live_round_meta(row.get("round"))
+        out.append({
+            "group": row.get("group") or group,
+            "md": md,
+            "round_label": label,
+            "home": h,
+            "away": a,
+            "date": row.get("date"),
+            "ground": row.get("ground"),
+            "live_fixture": True,
+        })
+        seen.add((h, a)); seen.add((a, h))
     return out
 
 def _result_key(home, away):
@@ -405,6 +443,8 @@ small{color:var(--mut);font-size:12px;line-height:1.6;display:block}
 </div><div class="ov" id="ov"><div class="rep" id="rep"></div></div>
 <script>const PRED=/*DATA*/;
 const GROUPS={};PRED.matches.forEach(m=>{(GROUPS[m.group]=GROUPS[m.group]||1)});const gkeys=Object.keys(GROUPS).sort();
+const roundMap=new Map();PRED.matches.forEach(m=>{const id=String(m.md);if(!roundMap.has(id))roundMap.set(id,m.md_label||m.round_label||`第 ${m.md} 轮`)});
+const roundKeys=[...roundMap.keys()];
 const pct=x=>(x*100).toFixed(0);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const ST=PRED.update_status||{},CR=ST.current_results||{},HS=ST.history||{},FB=CR.fallback_source||{};
@@ -419,19 +459,19 @@ document.getElementById("status").innerHTML=
  `<span>最后云端更新 <b>${checked}</b></span><span>${dataLabel} <b>${CR.status||"not_run"}</b> · 完赛 ${CR.finished||0} · 待赛 ${CR.upcoming||0}${sourceNote}${apiReason}</span><span>动态盘口 <b>${MS.status||"not_run"}</b> · ${Object.keys(MM).length} 场 · ${marketChecked}</span><span>历史拟合 <b>${HS.status||"not_run"}</b> · 样本 ${HS.matches||0}</span>`;
 
 /* ---- filters + list ---- */
-let curMD=1,curGP="all";
+let curMD=String((PRED.matches.find(m=>!m.played)||PRED.matches[0]||{}).md||roundKeys[0]||1),curGP="all";
 function chips(){const md=document.getElementById("mdf");
- md.innerHTML='<span class="lab">轮次</span>'+[1,2,3].map(n=>`<span class="chip md ${n==curMD?'on':''}" data-md="${n}">第 ${n} 轮</span>`).join("");
+ md.innerHTML='<span class="lab">轮次</span>'+roundKeys.map(n=>`<span class="chip md ${String(n)==curMD?'on':''}" data-md="${esc(n)}">${esc(roundMap.get(n))}</span>`).join("");
  const gp=document.getElementById("gpf");
  gp.innerHTML='<span class="lab">小组</span><span class="chip gp '+(curGP=='all'?'on':'')+'" data-gp="all">全部</span>'+gkeys.map(g=>`<span class="chip gp ${curGP==g?'on':''}" data-gp="${g}">${g}</span>`).join("");
- md.querySelectorAll(".md").forEach(c=>c.onclick=()=>{curMD=+c.dataset.md;chips();list()});
+ md.querySelectorAll(".md").forEach(c=>c.onclick=()=>{curMD=c.dataset.md;chips();list()});
  gp.querySelectorAll(".gp").forEach(c=>c.onclick=()=>{curGP=c.dataset.gp;chips();list()});}
-function list(){const L=PRED.matches.filter(m=>m.md==curMD&&(curGP=="all"||m.group==curGP));let h="";
+function list(){const L=PRED.matches.filter(m=>String(m.md)==curMD&&(curGP=="all"||m.group==curGP));let h="";
  L.forEach((m,i)=>{const r=m.judgment,p=m.played;let fh,fa,pill,head,hs="",as="";
   if(p){fh=p[0]>p[1];fa=p[1]>p[0];hs=p[0];as=p[1];pill=m.fresh?'<span class="pill new">刚更新</span>':'<span class="pill fin">完赛</span>';head="最终比分";}
   else{fh=r.w>=r.l;fa=r.l>r.w;pill=m.src=='market'?'<span class="pill mkt">盘口校准</span>':'<span class="pill mod">模型</span>';
    head=`${fh?m.home:m.away} 胜 ${pct(Math.max(r.w,r.l))}%`;}
-  h+=`<div class="mrow ${m.fresh?'fresh':''}" data-i="${i}"><span class="tag">${m.group}组·R${m.md}</span>
+  h+=`<div class="mrow ${m.fresh?'fresh':''}" data-i="${i}"><span class="tag">${esc(m.round_label||`${m.group}组·R${m.md}`)}</span>
    <span class="mteams"><span class="${fh?'fav':''}">${m.home}</span><span class="vs">vs</span><span class="${fa?'fav':''}">${m.away}</span>${m.note?'<span class="jdot" title="含伤停判断"></span>':''}</span>
    ${p?`<span class="mscore">${hs} : ${as}</span>`:`<span class="headline">${head}</span>`}${pill}</div>`});
  const box=document.getElementById("list");box.innerHTML=h||'<small>暂无比赛</small>';
@@ -479,7 +519,7 @@ function report(m){const r=m.judgment,ci=m.ci,p=m.played;
  const sig=(m.public_signals||[]).map(s=>`<span>${s}</span>`).join("");
  document.getElementById("rep").innerHTML=`<span class="x" onclick="cl()">×</span>
   <div class="rh">${m.home} <span style="color:var(--mut);font-weight:400">vs</span> ${m.away}</div>
-  <div class="rs">${m.group} 组 · 第 ${m.md} 轮 · ${m.src=='market'?'已用实时盘口校准':'Elo + Dixon-Coles 模型'}</div>
+  <div class="rs">${esc(m.round_label||`${m.group} 组 · 第 ${m.md} 轮`)} · ${m.src=='market'?'已用实时盘口校准':'Elo + Dixon-Coles 模型'}</div>
   ${res}
   <div class="call scorecall">${scorelineBlock(m)}</div>
 

@@ -93,6 +93,7 @@ for _k in _load_json_sidecar("fresh_results.json", {}).keys():
         pass
 
 HISTORICAL_RESULTS = _load_json_sidecar("historical_results.json", [])
+LIVE_FIXTURES = _load_json_sidecar("live_fixtures.json", [])
 UPDATE_STATUS = _load_json_sidecar("update_status.json", {
     "checked_at": None,
     "current_results": {"status": "not_run", "finished": 0, "upcoming": 0},
