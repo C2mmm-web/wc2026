@@ -47,7 +47,7 @@ def fixtures(live_fixtures=None):
     for g, t in GROUPS.items():
         for md, pairs in TEMPLATE_MD.items():
             for i, j in pairs:
-                out.append({"group": g, "md": md, "round_label": f"{g}组·R{md}", "home": t[i], "away": t[j]})
+                out.append({"group": g, "md": md, "md_label": f"第 {md} 轮", "round_label": f"{g}组·R{md}", "home": t[i], "away": t[j]})
     seen = {(row["home"], row["away"]) for row in out}
     seen |= {(row["away"], row["home"]) for row in out}
     for row in live_fixtures if live_fixtures is not None else LIVE_FIXTURES:
@@ -58,6 +58,7 @@ def fixtures(live_fixtures=None):
         out.append({
             "group": row.get("group") or group,
             "md": md,
+            "md_label": label,
             "round_label": label,
             "home": h,
             "away": a,

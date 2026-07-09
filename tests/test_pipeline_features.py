@@ -899,6 +899,7 @@ class MainPayloadFeatureTests(unittest.TestCase):
         self.assertEqual(final["home"], "France")
         self.assertEqual(final["away"], "Argentina")
         self.assertEqual(final["md"], 7)
+        self.assertEqual(final["md_label"], "决赛")
         self.assertEqual(final["round_label"], "决赛")
         self.assertTrue(final["live_fixture"])
         self.assertEqual(
